@@ -1,0 +1,8 @@
+models/
+*.ipynb
+.git/
+__pycache__/
+*.pyc
+.venv/
+src/
+README.md

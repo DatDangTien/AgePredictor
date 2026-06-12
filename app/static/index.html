@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Age Predictor</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main class="app">
+    <header>
+      <h1>Age Predictor</h1>
+      <p class="subtitle">Detect every face and estimate its age.</p>
+    </header>
+
+    <section class="controls">
+      <div class="tabs">
+        <button id="tab-upload" class="tab active" type="button">Upload</button>
+        <button id="tab-camera" class="tab" type="button">Camera</button>
+      </div>
+
+      <!-- Upload panel -->
+      <div id="panel-upload" class="panel">
+        <label class="file-drop" id="drop-zone">
+          <input type="file" id="file-input" accept="image/*" hidden />
+          <span class="file-drop-text">Tap to choose or drop an image here</span>
+        </label>
+      </div>
+
+      <!-- Camera panel -->
+      <div id="panel-camera" class="panel hidden">
+        <video id="video" playsinline autoplay muted></video>
+        <div class="camera-actions">
+          <button id="btn-start" class="btn" type="button">Start camera</button>
+          <button id="btn-capture" class="btn primary" type="button" disabled>Capture</button>
+          <button id="btn-switch" class="btn" type="button" disabled>Flip</button>
+        </div>
+      </div>
+    </section>
+
+    <div id="status" class="status hidden" role="status" aria-live="polite"></div>
+
+    <section class="result hidden" id="result-section">
+      <div class="canvas-wrap">
+        <canvas id="canvas"></canvas>
+      </div>
+      <div id="faces" class="faces"></div>
+    </section>
+  </main>
+
+  <canvas id="capture-canvas" hidden></canvas>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+services:
+  age-predictor:
+    build: .
+    image: age-predictor:latest
+    ports:
+      - "7999:8000"
+    volumes:
+      # Mount local models dir into the container (read-only).
+      - ./models:/models:ro
+    environment:
+      MODELS_DIR: /models
+      FACE_SCORE_THRESHOLD: "0.55"
+      FACE_NMS_IOU: "0.3"
+      AGE_MARGIN_RATE: "0.0"
+      GENDER_FEMALE_THRESHOLD: "0.5"
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    restart: unless-stopped
+    # Requires nvidia-container-toolkit on the host.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
