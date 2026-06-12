@@ -1,28 +1,61 @@
-# Age Predictor
+# Age & Gender Predictor
 
-Detect every face in an image and estimate each person's age — from a photo
-upload **or** your live camera. Runs a fast two-stage ONNX vision pipeline
-behind a FastAPI server with a clean, responsive web UI that works on phone and
-desktop.
-
-> 📷 **Live demo:** _video coming soon_ — see [Demo video](#demo-video) for how
-> it's recorded.
+Detect every face in an image and estimate each person's **age and gender** —
+from a photo upload **or** your live camera. Runs a fast three-stage ONNX vision
+pipeline behind a FastAPI server with a clean, responsive web UI that works on
+phone and desktop.
 
 ```
-image ──► face detection ──► per-face crop + align ──► age model ──► age per face
+image --> face detection --> per-face crop + align --+--> age model    --+--> age + gender
+                                                     +--> gender model --+
 ```
+
+## Demo
+
+> 📷 **Live demo:** _video coming soon._
+
+A short screen capture of the web UI showing live age + gender detection.
+
+**How it's recorded:**
+
+1. Run the app (`docker compose up` or `./run.sh`) and open
+   `http://localhost:8000`.
+2. Start a screen recording — `OBS Studio` (free, cross-platform) or your OS
+   recorder (macOS: <kbd>⌘⇧5</kbd>; Linux: `wf-recorder` / GNOME screencast;
+   Windows: Xbox Game Bar <kbd>Win+G</kbd>).
+3. Switch to the **Camera** tab, let it detect faces live, move around so the
+   boxes + age/gender labels track in real time.
+4. Trim to ~15–30s, export as MP4.
+5. Add it to the repo: either commit a short clip under `docs/demo.mp4` and
+   reference it, or (better for GitHub) drag the MP4 into a GitHub issue/PR
+   comment to get a hosted URL and paste it at the top of this README.
+
+> GitHub renders an uploaded MP4 inline. A repo-committed file needs a link or
+> an animated GIF (convert with `ffmpeg -i demo.mp4 -vf fps=12 demo.gif`).
+
+## Models
+
+| Stage          | Model                      | Backbone                    | Input             | Params |
+|----------------|----------------------------|-----------------------------|-------------------|--------|
+| Face detection | Lightweight-Face-Detection (Qualcomm) | MobileNetV3-Small | 640×480 grayscale | ~0.9M |
+| Age            | DeepFace age               | VGGFace (VGG-16)            | 224×224 RGB       | ~135M |
+| Gender         | DeepFace gender            | VGGFace (VGG-16)            | 224×224 RGB       | ~134M |
+
+All three run as **ONNX** under ONNX Runtime. The face detector is quantized to
+**8-bit** for a tiny footprint; age and gender are full-precision and share the
+same detected face crop. Age predicts over 0–100; gender predicts Female/Male.
 
 ## Features
 
-- 🧑‍🤝‍🧑 **Multi-face** — detects and ages every face in the frame, not just one.
+- 🧑‍🤝‍🧑 **Multi-face** — ages and genders every face in the frame, not just one.
 - 🖼️ **Upload** — tap-to-pick or drag-and-drop. Responsive layout for mobile + desktop.
-- 🎥 **Live camera** — point your webcam/phone camera and get ages in real time.
-- 🎯 **Visual results** — boxes drawn on a `<canvas>` with an age label per face,
-  plus a chip list showing age + detection confidence.
+- 🎥 **Live camera** — point your webcam/phone camera and get age + gender in real time.
+- ⚖️ **Debiased gender** — tunable threshold to counter the dataset's male skew.
+- 🎯 **Visual results** — boxes drawn on a `<canvas>` with an age + gender label
+  per face, plus a chip list showing the per-face scores.
 - ⚡ **GPU-accelerated** — ONNX Runtime uses CUDA when available, falls back to
   CPU automatically.
-- 🪶 **Light footprint** — face detector is quantized (w8a8); no torch or
-  qai_hub_models needed at runtime.
+- 🪶 **Light footprint** — quantized face detector; runs without torch.
 - 🛡️ **Clear errors** — bad image, oversized upload, blocked camera, and
   inference failures each surface a readable message.
 
@@ -50,7 +83,7 @@ Confirm GPU is used — startup log should print:
 No GPU/toolkit on the host? ONNX Runtime falls back to CPU automatically (the
 CUDA provider just won't load). Env vars (set in `docker-compose.yml`):
 `MODELS_DIR`, `FACE_SCORE_THRESHOLD`, `FACE_NMS_IOU`, `AGE_MARGIN_RATE`,
-`MAX_UPLOAD_BYTES`.
+`GENDER_FEMALE_THRESHOLD`, `MAX_UPLOAD_BYTES`.
 
 ### Run locally (conda env `vision_worker`)
 
@@ -78,30 +111,16 @@ CUDA provider just won't load). Env vars (set in `docker-compose.yml`):
 | API server   | FastAPI 0.118 + Uvicorn |
 | Inference    | ONNX Runtime (`onnxruntime-gpu` 1.23) |
 | Image ops    | OpenCV (headless) + NumPy |
-| Models       | ONNX — quantized face detector + float32 age classifier |
+| Models       | ONNX — quantized face detector + float32 age + gender classifiers |
 | Packaging    | Docker, CUDA 12.6 / cuDNN 9 base image, models mounted as a volume |
 | Hardware     | NVIDIA GPU (CUDA) with automatic CPU fallback |
 
-## Technical details
-
-### Pipeline
-
-- **Face detection** — `models/face_det_lite-onnx-w8a8/face_det_lite.onnx`
-  (quantized w8a8: `uint8` in, `uint8` out). Runtime quantizes the grayscale
-  input and dequantizes the `heatmap`/`bbox`/`landmark` outputs using the
-  scales/zero-points in `metadata.json`. The CenterNet-style decode + NMS is a
-  pure-numpy reimplementation of `qai_hub_models...face_det_lite.utils.detect`,
-  so neither **torch** nor **qai_hub_models** is needed at runtime.
-- **Age** — `models/age.onnx` (`float32`, NHWC `[1,224,224,3]`, BGR /255).
-  Output is a softmax over ages 0..100; predicted age = `Σ p_i · i`.
-  Each crop is eye-aligned + letterboxed (matches the benchmark notebook).
-
-### API
+## API
 
 | Method | Path           | Body                         | Returns |
 |--------|----------------|------------------------------|---------|
 | GET    | `/health`      | —                            | `{"status":"ok"}` |
-| POST   | `/api/predict` | `multipart/form-data` `file` | faces + ages |
+| POST   | `/api/predict` | `multipart/form-data` `file` | faces + age + gender |
 | GET    | `/`            | —                            | web UI |
 
 `POST /api/predict` response:
@@ -112,7 +131,7 @@ CUDA provider just won't load). Env vars (set in `docker-compose.yml`):
   "width": 1920,
   "height": 1080,
   "faces": [
-    {"box": [799.5, 329.9, 1085.6, 661.6], "score": 0.846, "age": 36.6}
+    {"box": [799.5, 329.9, 1085.6, 661.6], "score": 0.846, "age": 36.6, "gender": "Male", "gender_score": 0.91}
   ]
 }
 ```
@@ -121,21 +140,18 @@ CUDA provider just won't load). Env vars (set in `docker-compose.yml`):
 `{"detail": "..."}` with 400 (bad/empty/undecodable image), 413 (too large),
 or 500 (inference failure).
 
-## Demo video
+## Known challenges
 
-To showcase live age detection, record a short screen capture of the web UI:
+The age + gender models were trained on **IMDB-WIKI**, whose biases carry over:
 
-1. Run the app (`docker compose up` or `./run.sh`) and open
-   `http://localhost:8000`.
-2. Start a screen recording — `OBS Studio` (free, cross-platform) or your OS
-   recorder (macOS: <kbd>⌘⇧5</kbd>; Linux: `wf-recorder` / GNOME screencast;
-   Windows: Xbox Game Bar <kbd>Win+G</kbd>).
-3. Switch to the **Camera** tab, let it detect faces live, move around so the
-   boxes + age labels track in real time.
-4. Trim to ~15–30s, export as MP4.
-5. Add it to the repo: either commit a short clip under `docs/demo.mp4` and
-   reference it, or (better for GitHub) drag the MP4 into a GitHub issue/PR
-   comment to get a hosted URL and paste that at the top of this README.
+- **Age** — skewed toward middle-aged faces; weaker on the elderly (tends to
+  under-estimate older people).
+- **Gender** — skewed toward **Male**; women are sometimes misclassified. A
+  tunable decision threshold partly counters this at inference time.
 
-> GitHub renders an uploaded MP4 inline. A repo-committed file needs a link or
-> an animated GIF (use `ffmpeg` to convert: `ffmpeg -i demo.mp4 -vf fps=12 demo.gif`).
+## Future work
+
+- **Fine-tune** the age + gender models on better-balanced data (more elderly,
+  more female samples) to reduce the IMDB-WIKI bias.
+- **Quantize** the age + gender models (like the face detector) for smaller
+  footprint and faster inference.
