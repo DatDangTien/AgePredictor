@@ -81,9 +81,7 @@ Confirm GPU is used — startup log should print:
 ```
 
 No GPU/toolkit on the host? ONNX Runtime falls back to CPU automatically (the
-CUDA provider just won't load). Env vars (set in `docker-compose.yml`):
-`MODELS_DIR`, `FACE_SCORE_THRESHOLD`, `FACE_NMS_IOU`, `AGE_MARGIN_RATE`,
-`GENDER_FEMALE_THRESHOLD`, `MAX_UPLOAD_BYTES`.
+CUDA provider just won't load). 
 
 ### Run locally (conda env `vision_worker`)
 
