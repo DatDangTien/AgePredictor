@@ -14,37 +14,6 @@ image --> face detection --> per-face crop + align --+--> age model    --+--> ag
 
 > 📷 **Live demo:** _video coming soon._
 
-A short screen capture of the web UI showing live age + gender detection.
-
-**How it's recorded:**
-
-1. Run the app (`docker compose up` or `./run.sh`) and open
-   `http://localhost:8000`.
-2. Start a screen recording — `OBS Studio` (free, cross-platform) or your OS
-   recorder (macOS: <kbd>⌘⇧5</kbd>; Linux: `wf-recorder` / GNOME screencast;
-   Windows: Xbox Game Bar <kbd>Win+G</kbd>).
-3. Switch to the **Camera** tab, let it detect faces live, move around so the
-   boxes + age/gender labels track in real time.
-4. Trim to ~15–30s, export as MP4.
-5. Add it to the repo: either commit a short clip under `docs/demo.mp4` and
-   reference it, or (better for GitHub) drag the MP4 into a GitHub issue/PR
-   comment to get a hosted URL and paste it at the top of this README.
-
-> GitHub renders an uploaded MP4 inline. A repo-committed file needs a link or
-> an animated GIF (convert with `ffmpeg -i demo.mp4 -vf fps=12 demo.gif`).
-
-## Models
-
-| Stage          | Model                      | Backbone                    | Input             | Params |
-|----------------|----------------------------|-----------------------------|-------------------|--------|
-| Face detection | Lightweight-Face-Detection (Qualcomm) | MobileNetV3-Small | 640×480 grayscale | ~0.9M |
-| Age            | DeepFace age               | VGGFace (VGG-16)            | 224×224 RGB       | ~135M |
-| Gender         | DeepFace gender            | VGGFace (VGG-16)            | 224×224 RGB       | ~134M |
-
-All three run as **ONNX** under ONNX Runtime. The face detector is quantized to
-**8-bit** for a tiny footprint; age and gender are full-precision and share the
-same detected face crop. Age predicts over 0–100; gender predicts Female/Male.
-
 ## Features
 
 - 🧑‍🤝‍🧑 **Multi-face** — ages and genders every face in the frame, not just one.
@@ -58,6 +27,20 @@ same detected face crop. Age predicts over 0–100; gender predicts Female/Male.
 - 🪶 **Light footprint** — quantized face detector; runs without torch.
 - 🛡️ **Clear errors** — bad image, oversized upload, blocked camera, and
   inference failures each surface a readable message.
+
+
+## Models
+
+| Stage          | Model                      | Backbone                    | Input             | Params |
+|----------------|----------------------------|-----------------------------|-------------------|--------|
+| Face detection | Lightweight-Face-Detection (Qualcomm) | MobileNetV3-Small | 640×480 grayscale | ~0.9M |
+| Age            | DeepFace age               | VGGFace (VGG-16)            | 224×224 RGB       | ~135M |
+| Gender         | DeepFace gender            | VGGFace (VGG-16)            | 224×224 RGB       | ~134M |
+
+All three run as **ONNX** under ONNX Runtime. The face detector is quantized to
+**8-bit** for a tiny footprint; age and gender are full-precision and share the
+same detected face crop. Age predicts over 0–100; gender predicts Female/Male.
+
 
 ## Quick start
 
@@ -99,7 +82,6 @@ CUDA provider just won't load).
   on a LAN IP the browser blocks the camera — the UI detects this and shows a
   clear message instead of failing silently. Permission-denied / no-camera /
   camera-in-use errors are each surfaced.
-- Loading and error states are shown inline.
 
 ## Tech stack
 
@@ -138,7 +120,7 @@ CUDA provider just won't load).
 `{"detail": "..."}` with 400 (bad/empty/undecodable image), 413 (too large),
 or 500 (inference failure).
 
-## Known challenges
+## Challenges
 
 The age + gender models were trained on **IMDB-WIKI**, whose biases carry over:
 
