@@ -3,5 +3,5 @@ uvicorn[standard]==0.30.6
 python-multipart==0.0.9
 numpy==1.26.4
 opencv-python-headless==4.10.0.84
-onnxruntime-gpu==1.23.2
+onnxruntime-gpu==1.24.3
 onnx==1.17.0

@@ -1,3 +1,10 @@
 __pycache__/
+.vscode/
 models/
+data/
+paper/
 *.log
+output/
+
+*.jpg
+*.png
