@@ -23,8 +23,10 @@ model.eval()
 example_inputs = (torch.randn(1, 3, 224, 224),)
 torch.onnx.export(model, example_inputs, "models/adaface_ir50_ms1mv2_gender.onnx",
                   input_names=["input"], output_names=["logits"],
-                  dynamic_axes={"input": {0: "batch"}, "logits": {0: "batch"}})
+                  dynamic_axes={"input": {0: "batch"}, "logits": {0: "batch"}},
+                  dynamo=False)
 
 # Verify
 new_onnx = onnx.load("models/adaface_ir50_ms1mv2_gender.onnx")
 onnx.checker.check_model(new_onnx)
+print('ONNX model export successfully')
