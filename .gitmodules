@@ -1,0 +1,3 @@
+[submodule "thirdparty/adaface"]
+	path = thirdparty/adaface
+	url = https://github.com/mk-minchul/adaface
