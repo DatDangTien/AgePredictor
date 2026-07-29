@@ -54,7 +54,8 @@ async def predict(file: UploadFile = File(...)) -> JSONResponse:
 
     # Low-light enhancement for age/gender crops; detection stays on the
     # original to keep the detector in its training distribution.
-    enhanced = enhance_lowlight(img)
+    # enhanced = enhance_lowlight(img)
+    enhanced = img
 
     try:
         faces = get_pipeline().predict(enhanced, detect_image=img)

@@ -33,13 +33,38 @@ image --> face detection --> per-face crop + align --+--> age model    --+--> ag
 
 | Stage          | Model                      | Backbone                    | Input             | Params |
 |----------------|----------------------------|-----------------------------|-------------------|--------|
-| Face detection | Lightweight-Face-Detection (Qualcomm) | MobileNetV3-Small | 640×480 grayscale | ~0.9M |
-| Age            | DeepFace age               | VGGFace (VGG-16)            | 224×224 RGB       | ~135M |
-| Gender         | DeepFace gender            | VGGFace (VGG-16)            | 224×224 RGB       | ~134M |
+| Face detection | Lightweight-Face-Detection (Qualcomm) | MobileNetV3-Small | 640×480 grayscale | ~0.89M (885,255) |
+| Age            | DeepFace age               | VGGFace (VGG-16)            | 224×224 RGB       | ~134.67M (134,671,083) |
+| Gender (default) | AdaFace gender           | IR-50 (ResNet-50 variant)   | 224×224 RGB       | ~30.94M (30,939,910) |
+| Gender (legacy)  | DeepFace gender          | VGGFace (VGG-16)            | 224×224 RGB       | ~134.27M (134,265,480) |
+
 
 All three run as **ONNX** under ONNX Runtime. The face detector is quantized to
 **8-bit** for a tiny footprint; age and gender are full-precision and share the
 same detected face crop. Age predicts over 0–100; gender predicts Female/Male.
+
+### Model Download
+
+To download and extract all required models (Qualcomm face detector and Hugging Face AdaFace gender model) into the `models/` directory, run:
+
+```bash
+python3 scripts/model_download.py
+```
+
+Or using the shell script:
+
+```bash
+./scripts/model_download.sh
+```
+
+Alternatively, to download the gender ONNX model directly using the Hugging Face CLI:
+
+```bash
+hf download DatinAI/AdaFace_gender adaface_ir50_ms1mv2_gender.onnx --local-dir models/
+```
+
+
+
 
 
 ## Quick start

@@ -30,7 +30,7 @@ FACE_DET_MODEL_PATH = os.path.join(
     MODELS_DIR, "face_det_lite-onnx-w8a8", "face_det_lite.onnx"
 )
 AGE_MODEL_PATH = os.path.join(MODELS_DIR, "age.onnx")
-GENDER_MODEL_PATH = os.path.join(MODELS_DIR, "gender.onnx")
+GENDER_MODEL_PATH = os.path.join(MODELS_DIR, "adaface_ir50_ms1mv2_gender.onnx")
 
 # gender model output order
 GENDER_LABELS = ["Female", "Male"]
@@ -351,10 +351,25 @@ class AgePipeline:
         return float(np.sum(output[0] * indices))
 
     @staticmethod
+    def _gender_input(age_inp: np.ndarray) -> np.ndarray:
+        """Re-derive the adaface gender input from the shared age crop.
+
+        age_inp is the aligned BGR crop as NHWC float in [0, 1] (the age
+        model's layout). The adaface IR-50 gender model instead wants NCHW,
+        BGR, normalized with mean=std=0.5 -> [-1, 1] (finetune.ipynb uses
+        ToTensor + Normalize([0.5]*3, [0.5]*3) on a BGR PIL image).
+        """
+        x = (age_inp - 0.5) / 0.5  # [0,1] -> [-1,1]
+        return np.ascontiguousarray(x.transpose(0, 3, 1, 2))  # NHWC -> NCHW
+
+    @staticmethod
     def _postprocess_gender(output: np.ndarray) -> Tuple[str, float]:
-        # output: (1, 2) softmax over [Female, Male].
+        # output: (1, 2) RAW logits over [Female, Male] (adaface head ends in
+        # BatchNorm, no softmax) -- apply softmax here.
         # Threshold p(Female) instead of argmax to debias the male skew.
-        probs = output[0]
+        logits = output[0].astype(np.float64)
+        e = np.exp(logits - logits.max())
+        probs = e / e.sum()
         p_female = float(probs[0])
         if p_female >= GENDER_FEMALE_THRESHOLD:
             return "Female", p_female
@@ -383,7 +398,8 @@ class AgePipeline:
             # age + gender share the same aligned face crop
             age_pred = self.age_sess.run([self.age_out], {self.age_in: inp})
             age = self._postprocess_age(age_pred[0])
-            gen_pred = self.gender_sess.run([self.gender_out], {self.gender_in: inp})
+            gen_inp = self._gender_input(inp)
+            gen_pred = self.gender_sess.run([self.gender_out], {self.gender_in: gen_inp})
             gender, gender_score = self._postprocess_gender(gen_pred[0])
             out.append(
                 {
