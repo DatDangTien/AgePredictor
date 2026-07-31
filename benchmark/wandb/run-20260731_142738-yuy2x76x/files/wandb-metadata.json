@@ -1,0 +1,34 @@
+{
+  "os": "macOS-26.3.1-arm64-arm-64bit",
+  "python": "CPython 3.11.15",
+  "startedAt": "2026-07-31T07:27:38.794949Z",
+  "args": [
+    "--limit",
+    "300",
+    "--wandb"
+  ],
+  "program": "/Users/phongngo/Code/AgeGenderPredictor/AgePredictor/benchmark/benchmark_runtime.py",
+  "codePath": "benchmark/benchmark_runtime.py",
+  "codePathLocal": "benchmark_runtime.py",
+  "git": {
+    "remote": "https://github.com/DatDangTien/AgePredictor.git",
+    "commit": "62b8106ac1be6903492cd57bc60f56c7e9e02fbf"
+  },
+  "email": "phongunin@gmail.com",
+  "root": "/Users/phongngo/Code/AgeGenderPredictor/AgePredictor/benchmark",
+  "host": "Mac.lan",
+  "executable": "/Users/phongngo/miniconda3/envs/AgeGenderPredictor/bin/python3",
+  "cpu_count": 12,
+  "cpu_count_logical": 12,
+  "disk": {
+    "/": {
+      "total": "494384795648",
+      "used": "398677061632"
+    }
+  },
+  "memory": {
+    "total": "51539607552"
+  },
+  "apple": {},
+  "writerId": "gh5lh934cj7j9dkrkornljcmsr1w0dx4"
+}

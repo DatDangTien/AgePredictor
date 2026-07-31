@@ -74,23 +74,30 @@ python3 scripts/onnx_export.py
 
 `onnx_export.py` converts `age_model_weights.h5` to `age.onnx`, exports
 `gender_best.pth` when a locally trained checkpoint is present, and validates
-the face, age, and gender ONNX files. Already up-to-date exports are reused;
-pass `--force` to rebuild from available source checkpoints.
+the vendor-provided face detector plus the age and gender ONNX files against
+the production input/output tensor contracts. Already up-to-date exports are
+reused; pass `--force` to rebuild from available source checkpoints.
 
 ### Benchmarking
 
-`model_benchmark.ipynb` and `scripts/benchmark_runtime.py` benchmark the three
+`model_benchmark.ipynb` and `tests/benchmark_runtime.py` benchmark the three
 models used by the application against the flat All-Age-Faces images in
 `data/`. Run a deterministic, evenly spaced 100-image validation sample first:
 
 ```bash
-python scripts/benchmark_runtime.py --limit 100
+python3 tests/benchmark_runtime.py --limit 100
 ```
 
 Run the complete 13,322-image corpus after the validation sample succeeds:
 
 ```bash
-python scripts/benchmark_runtime.py --limit 0
+python3 tests/benchmark_runtime.py --limit 0
+```
+
+Add `--wandb` to log aggregate metrics and the JSON result to W&B:
+
+```bash
+python3 tests/benchmark_runtime.py --limit 100 --wandb
 ```
 
 Results are written to `output/benchmark_runtime.json`, including aggregate

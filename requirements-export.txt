@@ -1,0 +1,7 @@
+# Focused dependencies for scripts/onnx_export.py.
+numpy==1.26.4
+onnx==1.17.0
+deepface==0.0.93
+tensorflow==2.15.1
+tf2onnx==1.16.1
+torch==2.13.0

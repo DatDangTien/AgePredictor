@@ -20,10 +20,11 @@ import re
 import sys
 import time
 from collections import Counter
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 import cv2
 import numpy as np
@@ -42,7 +43,7 @@ AAF_FILENAME_PATTERN = re.compile(
 )
 DEFAULT_EXPECTED_COUNT = 13_322
 DEFAULT_MODELS_DIR = REPO_ROOT / "models"
-DEFAULT_WANDB_PROJECT = "age-gender-predictor-benchmarks"
+DEFAULT_WANDB_PROJECT = "AgeGenderPredictor"
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,35 @@ class BenchmarkConfig:
     warmup_runs: int = 10
     expected_count: int | None = DEFAULT_EXPECTED_COUNT
     progress_every: int = 100
+
+
+@dataclass(frozen=True)
+class WandbConfig:
+    enabled: bool = False
+    project: str = DEFAULT_WANDB_PROJECT
+    entity: str | None = None
+    run_name: str | None = None
+    mode: str = "online"
+    tags: tuple[str, ...] = ()
+
+
+@dataclass
+class BenchmarkMeasurements:
+    """Mutable measurements collected across benchmark records."""
+
+    face_stage_ms: list[float] = field(default_factory=list)
+    face_model_ms: list[float] = field(default_factory=list)
+    face_counts: list[int] = field(default_factory=list)
+    age_model_ms: list[float] = field(default_factory=list)
+    gender_model_ms: list[float] = field(default_factory=list)
+    pipeline_ms: list[float] = field(default_factory=list)
+    age_predictions: list[float] = field(default_factory=list)
+    age_labels: list[int] = field(default_factory=list)
+    gender_predictions: list[str] = field(default_factory=list)
+    gender_confidences: list[float] = field(default_factory=list)
+    female_probabilities: list[float] = field(default_factory=list)
+    samples: list[dict[str, Any]] = field(default_factory=list)
+    failures: list[dict[str, str]] = field(default_factory=list)
 
 
 class TimedSession:
@@ -330,136 +360,113 @@ def _provider_metadata(pipeline: AgePipeline) -> dict[str, list[str]]:
     }
 
 
-def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
-    """Run the three-stage benchmark and write its JSON result."""
-    all_records = load_aaf_records(
-        config.data_dir,
-        expected_count=config.expected_count,
-    )
-    records = select_records(all_records, config.limit)
-    print(
-        f"[benchmark] validated {len(all_records):,} images; "
-        f"running {len(records):,}"
-    )
+def _elapsed_ms(started: float) -> float:
+    return (time.perf_counter() - started) * 1000.0
 
-    pipeline = AgePipeline(
-        face_model_path=str(config.face_model_path),
-        age_model_path=str(config.age_model_path),
-        gender_model_path=str(config.gender_model_path),
-        providers=list(config.providers),
-    )
-    providers = _provider_metadata(pipeline)
-    _warmup(pipeline, records, config.warmup_runs)
 
-    face_timer = TimedSession(pipeline.face_sess)
-    pipeline.face_sess = face_timer  # type: ignore[assignment]
+def _benchmark_record(
+    pipeline: AgePipeline,
+    face_timer: TimedSession,
+    record: AAFRecord,
+    measurements: BenchmarkMeasurements,
+) -> None:
+    """Benchmark one record while preserving failures in the final report."""
+    pipeline_started = time.perf_counter()
+    sample: dict[str, Any] = {
+        "filename": record.path.name,
+        "age_true": record.age,
+    }
 
-    face_stage_ms: list[float] = []
-    face_model_ms: list[float] = []
-    face_counts: list[int] = []
-    age_model_ms: list[float] = []
-    gender_model_ms: list[float] = []
-    pipeline_ms: list[float] = []
-    age_predictions: list[float] = []
-    age_labels: list[int] = []
-    gender_predictions: list[str] = []
-    gender_confidences: list[float] = []
-    female_probabilities: list[float] = []
-    samples: list[dict[str, Any]] = []
-    failures: list[dict[str, str]] = []
+    try:
+        image = cv2.imread(str(record.path))
+        if image is None:
+            raise ValueError("image_decode_failed")
 
-    wall_started = time.perf_counter()
-    for position, record in enumerate(records, start=1):
-        pipeline_started = time.perf_counter()
-        sample: dict[str, Any] = {
-            "filename": record.path.name,
-            "age_true": record.age,
-        }
-        try:
-            image = cv2.imread(str(record.path))
-            if image is None:
-                raise ValueError("image_decode_failed")
+        face_call_count = len(face_timer.timings_ms)
+        stage_started = time.perf_counter()
+        faces = pipeline.detect_faces(image)
+        face_stage_ms = _elapsed_ms(stage_started)
+        measurements.face_stage_ms.append(face_stage_ms)
+        measurements.face_counts.append(len(faces))
+        sample.update(face_count=len(faces), face_stage_ms=face_stage_ms)
 
-            face_model_call_count = len(face_timer.timings_ms)
-            stage_started = time.perf_counter()
-            faces = pipeline.detect_faces(image)
-            stage_ms = (time.perf_counter() - stage_started) * 1000.0
-            face_stage_ms.append(stage_ms)
-            face_counts.append(len(faces))
-            sample["face_count"] = len(faces)
-            sample["face_stage_ms"] = stage_ms
-            if len(face_timer.timings_ms) > face_model_call_count:
-                model_ms = face_timer.timings_ms[-1]
-                face_model_ms.append(model_ms)
-                sample["face_model_ms"] = model_ms
+        if len(face_timer.timings_ms) > face_call_count:
+            face_model_ms = face_timer.timings_ms[-1]
+            measurements.face_model_ms.append(face_model_ms)
+            sample["face_model_ms"] = face_model_ms
 
-            if not faces:
-                raise ValueError("no_face_detected")
+        if not faces:
+            raise ValueError("no_face_detected")
 
-            xyxy, face_score, landmarks = max(faces, key=lambda item: item[1])
-            sample["face_score"] = float(face_score)
-            age_input = pipeline._preprocess_face_crop(
-                image,
-                xyxy,
-                landmarks,
-            )
-            if age_input is None:
-                raise ValueError("face_crop_failed")
+        xyxy, face_score, landmarks = max(faces, key=lambda item: item[1])
+        sample["face_score"] = float(face_score)
+        age_input = pipeline._preprocess_face_crop(image, xyxy, landmarks)
+        if age_input is None:
+            raise ValueError("face_crop_failed")
 
-            model_started = time.perf_counter()
-            age_output = pipeline.age_sess.run(
-                [pipeline.age_out],
-                {pipeline.age_in: age_input},
-            )[0]
-            current_age_ms = (time.perf_counter() - model_started) * 1000.0
-            predicted_age = pipeline._postprocess_age(age_output)
-            age_model_ms.append(current_age_ms)
-            age_predictions.append(predicted_age)
-            age_labels.append(record.age)
-            sample["age_predicted"] = predicted_age
-            sample["age_absolute_error"] = abs(predicted_age - record.age)
-            sample["age_model_ms"] = current_age_ms
+        model_started = time.perf_counter()
+        age_output = pipeline.age_sess.run(
+            [pipeline.age_out],
+            {pipeline.age_in: age_input},
+        )[0]
+        age_model_ms = _elapsed_ms(model_started)
+        predicted_age = pipeline._postprocess_age(age_output)
+        measurements.age_model_ms.append(age_model_ms)
+        measurements.age_predictions.append(predicted_age)
+        measurements.age_labels.append(record.age)
+        sample.update(
+            age_predicted=predicted_age,
+            age_absolute_error=abs(predicted_age - record.age),
+            age_model_ms=age_model_ms,
+        )
 
-            gender_input = pipeline._gender_input(age_input)
-            model_started = time.perf_counter()
-            gender_output = pipeline.gender_sess.run(
-                [pipeline.gender_out],
-                {pipeline.gender_in: gender_input},
-            )[0]
-            current_gender_ms = (time.perf_counter() - model_started) * 1000.0
-            predicted_gender, gender_confidence = pipeline._postprocess_gender(
-                gender_output
-            )
-            p_female = _female_probability(gender_output)
-            gender_model_ms.append(current_gender_ms)
-            gender_predictions.append(predicted_gender)
-            gender_confidences.append(gender_confidence)
-            female_probabilities.append(p_female)
-            sample["gender_predicted"] = predicted_gender
-            sample["gender_confidence"] = gender_confidence
-            sample["female_probability"] = p_female
-            sample["gender_model_ms"] = current_gender_ms
-        except Exception as exc:  # keep per-image failures visible
-            reason = str(exc) or type(exc).__name__
-            sample["failure"] = reason
-            failures.append({"filename": record.path.name, "reason": reason})
-        finally:
-            current_pipeline_ms = (time.perf_counter() - pipeline_started) * 1000.0
-            pipeline_ms.append(current_pipeline_ms)
-            sample["pipeline_ms"] = current_pipeline_ms
-            samples.append(sample)
+        gender_input = pipeline._gender_input(age_input)
+        model_started = time.perf_counter()
+        gender_output = pipeline.gender_sess.run(
+            [pipeline.gender_out],
+            {pipeline.gender_in: gender_input},
+        )[0]
+        gender_model_ms = _elapsed_ms(model_started)
+        predicted_gender, gender_confidence = pipeline._postprocess_gender(
+            gender_output
+        )
+        female_probability = _female_probability(gender_output)
+        measurements.gender_model_ms.append(gender_model_ms)
+        measurements.gender_predictions.append(predicted_gender)
+        measurements.gender_confidences.append(gender_confidence)
+        measurements.female_probabilities.append(female_probability)
+        sample.update(
+            gender_predicted=predicted_gender,
+            gender_confidence=gender_confidence,
+            female_probability=female_probability,
+            gender_model_ms=gender_model_ms,
+        )
+    except Exception as exc:  # keep per-image failures visible
+        reason = str(exc) or type(exc).__name__
+        sample["failure"] = reason
+        measurements.failures.append(
+            {"filename": record.path.name, "reason": reason}
+        )
+    finally:
+        pipeline_ms = _elapsed_ms(pipeline_started)
+        measurements.pipeline_ms.append(pipeline_ms)
+        sample["pipeline_ms"] = pipeline_ms
+        measurements.samples.append(sample)
 
-        if (
-            config.progress_every > 0
-            and (position % config.progress_every == 0 or position == len(records))
-        ):
-            print(f"[benchmark] processed {position:,}/{len(records):,}")
 
-    wall_seconds = time.perf_counter() - wall_started
-    successful_images = len(age_predictions)
-    prediction_counts = Counter(gender_predictions)
+def _build_result(
+    config: BenchmarkConfig,
+    all_records: Sequence[AAFRecord],
+    selected_records: Sequence[AAFRecord],
+    providers: dict[str, list[str]],
+    measurements: BenchmarkMeasurements,
+    wall_seconds: float,
+) -> dict[str, Any]:
+    successful_images = len(measurements.age_predictions)
+    gender_count = len(measurements.gender_predictions)
+    prediction_counts = Counter(measurements.gender_predictions)
 
-    result: dict[str, Any] = {
+    return {
         "schema_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "environment": {
@@ -487,10 +494,10 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         },
         "dataset": {
             **summarize_dataset(all_records),
-            "selected_images": len(records),
+            "selected_images": len(selected_records),
             "selection": (
                 "all"
-                if len(records) == len(all_records)
+                if len(selected_records) == len(all_records)
                 else "evenly_spaced_over_filename_order"
             ),
             "gender_ground_truth_available": False,
@@ -500,29 +507,39 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
             "measurement": (
                 "latency and detection coverage; no bounding-box accuracy"
             ),
-            "processed_images": len(records),
-            "images_with_detection": int(sum(count > 0 for count in face_counts)),
+            "processed_images": len(selected_records),
+            "images_with_detection": int(
+                sum(count > 0 for count in measurements.face_counts)
+            ),
             "detection_coverage": (
-                float(sum(count > 0 for count in face_counts) / len(records))
-                if records
+                float(
+                    sum(count > 0 for count in measurements.face_counts)
+                    / len(selected_records)
+                )
+                if selected_records
                 else None
             ),
             "mean_faces_per_processed_image": (
-                float(np.mean(face_counts)) if face_counts else None
+                float(np.mean(measurements.face_counts))
+                if measurements.face_counts
+                else None
             ),
-            "model_latency": latency_summary(face_model_ms),
-            "stage_latency": latency_summary(face_stage_ms),
+            "model_latency": latency_summary(measurements.face_model_ms),
+            "stage_latency": latency_summary(measurements.face_stage_ms),
         },
         "age": {
             "measurement": "accuracy against age encoded in NNNNNAxx.jpg",
-            **age_metrics(age_predictions, age_labels),
-            "model_latency": latency_summary(age_model_ms),
+            **age_metrics(
+                measurements.age_predictions,
+                measurements.age_labels,
+            ),
+            "model_latency": latency_summary(measurements.age_model_ms),
         },
         "gender": {
             "measurement": (
                 "latency and prediction distribution; no accuracy without labels"
             ),
-            "evaluated_images": len(gender_predictions),
+            "evaluated_images": gender_count,
             "accuracy": None,
             "prediction_counts": {
                 label: int(prediction_counts.get(label, 0))
@@ -530,39 +547,96 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
             },
             "prediction_rates": {
                 label: (
-                    float(prediction_counts.get(label, 0) / len(gender_predictions))
-                    if gender_predictions
+                    float(prediction_counts.get(label, 0) / gender_count)
+                    if gender_count
                     else None
                 )
                 for label in inference_module.GENDER_LABELS
             },
-            "confidence": value_summary(gender_confidences),
-            "female_probability": value_summary(female_probabilities),
-            "model_latency": latency_summary(gender_model_ms),
+            "confidence": value_summary(measurements.gender_confidences),
+            "female_probability": value_summary(
+                measurements.female_probabilities
+            ),
+            "model_latency": latency_summary(measurements.gender_model_ms),
         },
         "pipeline": {
-            "processed_images": len(records),
+            "processed_images": len(selected_records),
             "successful_images": successful_images,
-            "failed_images": len(failures),
+            "failed_images": len(measurements.failures),
             "success_rate": (
-                float(successful_images / len(records)) if records else None
+                float(successful_images / len(selected_records))
+                if selected_records
+                else None
             ),
-            "latency": latency_summary(pipeline_ms),
+            "latency": latency_summary(measurements.pipeline_ms),
             "wall_seconds": wall_seconds,
             "throughput_images_per_second": (
-                float(len(records) / wall_seconds) if wall_seconds > 0 else None
+                float(len(selected_records) / wall_seconds)
+                if wall_seconds > 0
+                else None
             ),
         },
-        "failures": failures,
-        "samples": samples,
+        "failures": measurements.failures,
+        "samples": measurements.samples,
     }
 
-    output_path = Path(config.output_path).expanduser().resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
+
+def _write_result(result: dict[str, Any], output_path: Path) -> Path:
+    resolved_path = output_path.expanduser().resolve()
+    resolved_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_path.write_text(
         json.dumps(result, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    return resolved_path
+
+
+def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
+    """Run the three-stage benchmark and write its JSON result."""
+    all_records = load_aaf_records(
+        config.data_dir,
+        expected_count=config.expected_count,
+    )
+    selected_records = select_records(all_records, config.limit)
+    print(
+        f"[benchmark] validated {len(all_records):,} images; "
+        f"running {len(selected_records):,}"
+    )
+
+    pipeline = AgePipeline(
+        face_model_path=str(config.face_model_path),
+        age_model_path=str(config.age_model_path),
+        gender_model_path=str(config.gender_model_path),
+        providers=list(config.providers),
+    )
+    providers = _provider_metadata(pipeline)
+    _warmup(pipeline, selected_records, config.warmup_runs)
+
+    face_timer = TimedSession(pipeline.face_sess)
+    pipeline.face_sess = face_timer  # type: ignore[assignment]
+    measurements = BenchmarkMeasurements()
+
+    wall_started = time.perf_counter()
+    for position, record in enumerate(selected_records, start=1):
+        _benchmark_record(pipeline, face_timer, record, measurements)
+        if config.progress_every > 0 and (
+            position % config.progress_every == 0
+            or position == len(selected_records)
+        ):
+            print(
+                f"[benchmark] processed {position:,}/"
+                f"{len(selected_records):,}"
+            )
+
+    result = _build_result(
+        config=config,
+        all_records=all_records,
+        selected_records=selected_records,
+        providers=providers,
+        measurements=measurements,
+        wall_seconds=time.perf_counter() - wall_started,
+    )
+    output_path = _write_result(result, Path(config.output_path))
     print(f"[benchmark] wrote {output_path}")
     return result
 
@@ -663,12 +737,7 @@ def _providers_from_name(name: str) -> tuple[str, ...]:
 
 def _init_wandb(
     config: BenchmarkConfig,
-    *,
-    project: str,
-    entity: str | None,
-    run_name: str | None,
-    mode: str,
-    tags: Sequence[str],
+    wandb_config: WandbConfig,
 ) -> Any:
     try:
         import wandb
@@ -679,11 +748,11 @@ def _init_wandb(
         ) from exc
 
     return wandb.init(
-        project=project,
-        entity=entity,
-        name=run_name,
-        mode=mode,
-        tags=list(tags),
+        project=wandb_config.project,
+        entity=wandb_config.entity,
+        name=wandb_config.run_name,
+        mode=wandb_config.mode,
+        tags=list(wandb_config.tags),
         job_type="runtime-benchmark",
         config={
             "data_dir": str(Path(config.data_dir).expanduser().resolve()),
@@ -704,6 +773,25 @@ def _init_wandb(
         },
         save_code=True,
     )
+
+
+@contextmanager
+def _wandb_session(
+    config: BenchmarkConfig,
+    wandb_config: WandbConfig,
+) -> Iterator[Any | None]:
+    if not wandb_config.enabled:
+        yield None
+        return
+
+    run = _init_wandb(config, wandb_config)
+    try:
+        yield run
+    except BaseException:
+        run.finish(exit_code=1)
+        raise
+    else:
+        run.finish(exit_code=0)
 
 
 def _log_wandb_result(
@@ -810,9 +898,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    args = parse_args(argv)
-    config = BenchmarkConfig(
+def _benchmark_config_from_args(args: argparse.Namespace) -> BenchmarkConfig:
+    return BenchmarkConfig(
         data_dir=args.data_dir,
         output_path=args.output,
         face_model_path=args.face_model,
@@ -827,18 +914,24 @@ def main(argv: Sequence[str] | None = None) -> None:
         progress_every=args.progress_every,
     )
 
-    wandb_run = None
-    exit_code = 0
-    try:
-        if args.wandb:
-            wandb_run = _init_wandb(
-                config,
-                project=args.wandb_project,
-                entity=args.wandb_entity,
-                run_name=args.wandb_run_name,
-                mode=args.wandb_mode,
-                tags=args.wandb_tags,
-            )
+
+def _wandb_config_from_args(args: argparse.Namespace) -> WandbConfig:
+    return WandbConfig(
+        enabled=args.wandb,
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        run_name=args.wandb_run_name,
+        mode=args.wandb_mode,
+        tags=tuple(args.wandb_tags),
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
+    config = _benchmark_config_from_args(args)
+    wandb_config = _wandb_config_from_args(args)
+
+    with _wandb_session(config, wandb_config) as wandb_run:
         result = run_benchmark(config)
         print_summary(result)
         if wandb_run is not None:
@@ -847,12 +940,6 @@ def main(argv: Sequence[str] | None = None) -> None:
                 result,
                 Path(config.output_path),
             )
-    except BaseException:
-        exit_code = 1
-        raise
-    finally:
-        if wandb_run is not None:
-            wandb_run.finish(exit_code=exit_code)
 
 
 if __name__ == "__main__":
