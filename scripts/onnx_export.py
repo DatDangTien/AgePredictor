@@ -25,6 +25,36 @@ for import_root in (REPO_ROOT, SCRIPTS_DIR):
     if str(import_root) not in sys.path:
         sys.path.insert(0, str(import_root))
 
+def _load_export_dependencies() -> tuple[Any, Any, Any, Any]:
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
+    try:
+        import onnx
+        import tensorflow as tf
+        import tf2onnx
+        from deepface.models.facial_recognition import VGGFace
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            f"Missing export dependency '{exc.name}'. Install export dependencies with:\n"
+            f"  {sys.executable} -m pip install -r "
+            f"{REPO_ROOT / 'requirements-export.txt'}"
+        ) from exc
+
+    return onnx, tf, tf2onnx, VGGFace
+
+
+def _build_age_model(weights_path: Path, tf: Any, vggface: Any) -> Any:
+    """Rebuild DeepFace's age network and load the supplied full-model weights."""
+    backbone = vggface.base_model()
+    output = tf.keras.layers.Conv2D(
+        AGE_CLASSES, (1, 1), name="predictions"
+    )(backbone.layers[-4].output)
+    output = tf.keras.layers.Flatten()(output)
+    output = tf.keras.layers.Activation("softmax")(output)
+
+    model = tf.keras.Model(inputs=backbone.input, outputs=output, name="deepface_age")
+    model.load_weights(str(weights_path))
+    return model
 
 def export_age_model(
     weights_path: Path,
