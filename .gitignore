@@ -12,3 +12,5 @@ output/
 # Graphify local states, virtual environments, and caches
 .graphify*
 graphify-out/
+
+.env

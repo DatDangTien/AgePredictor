@@ -42,6 +42,7 @@ AAF_FILENAME_PATTERN = re.compile(
 )
 DEFAULT_EXPECTED_COUNT = 13_322
 DEFAULT_MODELS_DIR = REPO_ROOT / "models"
+DEFAULT_WANDB_PROJECT = "age-gender-predictor-benchmarks"
 
 
 @dataclass(frozen=True)
@@ -210,6 +211,22 @@ def value_summary(values: Sequence[float]) -> dict[str, Any]:
         "p50": float(np.percentile(array, 50)),
         "p95": float(np.percentile(array, 95)),
     }
+
+
+def wandb_metrics(result: dict[str, Any]) -> dict[str, int | float]:
+    """Flatten numeric aggregate results into W&B metric names."""
+    metrics: dict[str, int | float] = {}
+
+    def collect(value: Any, prefix: str) -> None:
+        if isinstance(value, dict):
+            for key, nested_value in value.items():
+                collect(nested_value, f"{prefix}/{key}")
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            metrics[prefix] = value
+
+    for section in ("dataset", "face", "age", "gender", "pipeline"):
+        collect(result.get(section, {}), section)
+    return metrics
 
 
 def age_metrics(
@@ -644,6 +661,75 @@ def _providers_from_name(name: str) -> tuple[str, ...]:
     return ("CPUExecutionProvider",)
 
 
+def _init_wandb(
+    config: BenchmarkConfig,
+    *,
+    project: str,
+    entity: str | None,
+    run_name: str | None,
+    mode: str,
+    tags: Sequence[str],
+) -> Any:
+    try:
+        import wandb
+    except ImportError as exc:
+        raise RuntimeError(
+            "W&B logging requires the 'wandb' package. "
+            "Install the project requirements and try again."
+        ) from exc
+
+    return wandb.init(
+        project=project,
+        entity=entity,
+        name=run_name,
+        mode=mode,
+        tags=list(tags),
+        job_type="runtime-benchmark",
+        config={
+            "data_dir": str(Path(config.data_dir).expanduser().resolve()),
+            "output_path": str(Path(config.output_path).expanduser().resolve()),
+            "face_model_path": str(
+                Path(config.face_model_path).expanduser().resolve()
+            ),
+            "age_model_path": str(
+                Path(config.age_model_path).expanduser().resolve()
+            ),
+            "gender_model_path": str(
+                Path(config.gender_model_path).expanduser().resolve()
+            ),
+            "providers": list(config.providers),
+            "limit": config.limit,
+            "warmup_runs": config.warmup_runs,
+            "expected_count": config.expected_count,
+        },
+        save_code=True,
+    )
+
+
+def _log_wandb_result(
+    run: Any,
+    result: dict[str, Any],
+    output_path: Path,
+) -> None:
+    import wandb
+
+    metrics = wandb_metrics(result)
+    run.log(metrics)
+
+    artifact = wandb.Artifact(
+        name=f"benchmark-runtime-{run.id}",
+        type="benchmark-result",
+        description="Runtime benchmark metrics, per-image results, and failures",
+        metadata=metrics,
+    )
+    artifact.add_file(
+        local_path=str(output_path.expanduser().resolve()),
+        name="benchmark_runtime.json",
+    )
+    run.log_artifact(artifact)
+    print(f"[benchmark] logged {len(metrics)} metrics to W&B run {run.name}")
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -689,28 +775,84 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=DEFAULT_MODELS_DIR / "adaface_ir50_ms1mv2_gender.onnx",
     )
+    parser.add_argument(
+        "--wandb",
+        action="store_true",
+        help="Log aggregate metrics and the JSON result artifact to W&B",
+    )
+    parser.add_argument(
+        "--wandb-project",
+        default=DEFAULT_WANDB_PROJECT,
+        help="W&B project used with --wandb",
+    )
+    parser.add_argument(
+        "--wandb-entity",
+        default=None,
+        help="Optional W&B team or username",
+    )
+    parser.add_argument(
+        "--wandb-run-name",
+        default=None,
+        help="Optional W&B run display name",
+    )
+    parser.add_argument(
+        "--wandb-mode",
+        choices=("online", "offline"),
+        default="online",
+        help="Use offline mode to save the W&B run locally without uploading",
+    )
+    parser.add_argument(
+        "--wandb-tags",
+        nargs="*",
+        default=(),
+        help="Optional space-separated W&B run tags",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
-    result = run_benchmark(
-        BenchmarkConfig(
-            data_dir=args.data_dir,
-            output_path=args.output,
-            face_model_path=args.face_model,
-            age_model_path=args.age_model,
-            gender_model_path=args.gender_model,
-            providers=_providers_from_name(args.provider),
-            limit=None if args.limit <= 0 else args.limit,
-            warmup_runs=args.warmup_runs,
-            expected_count=(
-                None if args.expected_count <= 0 else args.expected_count
-            ),
-            progress_every=args.progress_every,
-        )
+    config = BenchmarkConfig(
+        data_dir=args.data_dir,
+        output_path=args.output,
+        face_model_path=args.face_model,
+        age_model_path=args.age_model,
+        gender_model_path=args.gender_model,
+        providers=_providers_from_name(args.provider),
+        limit=None if args.limit <= 0 else args.limit,
+        warmup_runs=args.warmup_runs,
+        expected_count=(
+            None if args.expected_count <= 0 else args.expected_count
+        ),
+        progress_every=args.progress_every,
     )
-    print_summary(result)
+
+    wandb_run = None
+    exit_code = 0
+    try:
+        if args.wandb:
+            wandb_run = _init_wandb(
+                config,
+                project=args.wandb_project,
+                entity=args.wandb_entity,
+                run_name=args.wandb_run_name,
+                mode=args.wandb_mode,
+                tags=args.wandb_tags,
+            )
+        result = run_benchmark(config)
+        print_summary(result)
+        if wandb_run is not None:
+            _log_wandb_result(
+                wandb_run,
+                result,
+                Path(config.output_path),
+            )
+    except BaseException:
+        exit_code = 1
+        raise
+    finally:
+        if wandb_run is not None:
+            wandb_run.finish(exit_code=exit_code)
 
 
 if __name__ == "__main__":

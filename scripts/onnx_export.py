@@ -25,7 +25,54 @@ for import_root in (REPO_ROOT, SCRIPTS_DIR):
     if str(import_root) not in sys.path:
         sys.path.insert(0, str(import_root))
 
-from export_deepface_age_onnx import export_age_model  # noqa: E402
+
+def export_age_model(
+    weights_path: Path,
+    output_path: Path,
+    *,
+    opset: int = DEFAULT_OPSET,
+) -> Path:
+    """Export and validate one DeepFace age model.
+
+    The ONNX file is written through a temporary sibling so a failed conversion
+    cannot replace an existing working model.
+    """
+    weights_path = weights_path.expanduser().resolve()
+    output_path = output_path.expanduser().resolve()
+
+    if not weights_path.is_file():
+        raise FileNotFoundError(
+            f"DeepFace age weights not found: {weights_path}\n"
+            f"Download them with:\n  {sys.executable} "
+            f"{REPO_ROOT / 'scripts' / 'model_download.py'}"
+        )
+
+    onnx, tf, tf2onnx, vggface = _load_export_dependencies()
+    model = _build_age_model(weights_path, tf, vggface)
+    input_signature = (
+        tf.TensorSpec(AGE_INPUT_SHAPE, tf.float32, name="input"),
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_output = output_path.with_name(f".{output_path.name}.tmp")
+    temporary_output.unlink(missing_ok=True)
+
+    print(f"Exporting DeepFace age model: {weights_path} -> {output_path}")
+    try:
+        tf2onnx.convert.from_keras(
+            model,
+            input_signature=input_signature,
+            opset=opset,
+            output_path=str(temporary_output),
+        )
+        exported = onnx.load(str(temporary_output), load_external_data=True)
+        onnx.checker.check_model(exported)
+        temporary_output.replace(output_path)
+    finally:
+        temporary_output.unlink(missing_ok=True)
+
+    print(f"Exported and verified: {output_path} ({output_path.stat().st_size:,} bytes)")
+    return output_path
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

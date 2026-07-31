@@ -9,3 +9,4 @@ deepface==0.0.93
 tensorflow==2.15.1
 tf2onnx==1.16.1
 torch==2.13.0
+wandb==0.25.0
