@@ -5,3 +5,7 @@ numpy==1.26.4
 opencv-python-headless==4.10.0.84
 onnxruntime-gpu==1.23.2
 onnx==1.17.0
+deepface==0.0.93
+tensorflow==2.15.1
+tf2onnx==1.16.1
+torch==2.13.0

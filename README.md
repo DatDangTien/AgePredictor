@@ -43,29 +43,63 @@ All three run as **ONNX** under ONNX Runtime. The face detector is quantized to
 **8-bit** for a tiny footprint; age and gender are full-precision and share the
 same detected face crop. Age predicts over 0–100; gender predicts Female/Male.
 
-### Model Download
+### Model Download and Export
 
-To download and extract all required models (Qualcomm face detector and Hugging Face AdaFace gender model) into the `models/` directory, run:
+Download all source model artifacts into `models/`:
 
 ```bash
 python3 scripts/model_download.py
 ```
 
-Or using the shell script:
+This downloads:
+
+- Qualcomm's quantized face detector (`.onnx` + external `.data`)
+- DeepFace's VGGFace age weights (`age_model_weights.h5`)
+- The pre-exported AdaFace gender model (`.onnx`)
+
+The downloader is idempotent. Existing files are reused; pass `--force` to
+download them again. The shell wrapper runs the same command:
 
 ```bash
 ./scripts/model_download.sh
 ```
 
-Alternatively, to download the gender ONNX model directly using the Hugging Face CLI:
+Install the build-only conversion dependencies, then export and validate every
+runtime model:
 
 ```bash
-hf download DatinAI/AdaFace_gender adaface_ir50_ms1mv2_gender.onnx --local-dir models/
+python3 -m pip install -r requirements-export.txt
+python3 scripts/onnx_export.py
 ```
 
+`onnx_export.py` converts `age_model_weights.h5` to `age.onnx`, exports
+`gender_best.pth` when a locally trained checkpoint is present, and validates
+the face, age, and gender ONNX files. Already up-to-date exports are reused;
+pass `--force` to rebuild from available source checkpoints.
 
+### Benchmarking
 
+`model_benchmark.ipynb` and `scripts/benchmark_runtime.py` benchmark the three
+models used by the application against the flat All-Age-Faces images in
+`data/`. Run a deterministic, evenly spaced 100-image validation sample first:
 
+```bash
+python scripts/benchmark_runtime.py --limit 100
+```
+
+Run the complete 13,322-image corpus after the validation sample succeeds:
+
+```bash
+python scripts/benchmark_runtime.py --limit 0
+```
+
+Results are written to `output/benchmark_runtime.json`, including aggregate
+metrics, per-image predictions and timings, failures, ONNX providers, and model
+hashes. All-Age-Faces filenames provide age labels, so the benchmark reports
+age accuracy. This copy of the dataset has neither gender labels nor bounding
+boxes, so gender accuracy and detector AP/IoU are intentionally not reported;
+gender prediction distribution and face-detection coverage are reported
+instead.
 
 ## Quick start
 

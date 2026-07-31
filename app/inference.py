@@ -157,10 +157,22 @@ def _make_session(
     path: str, sess_options: "ort.SessionOptions", providers: List[str]
 ) -> "ort.InferenceSession":
     """Build an InferenceSession, downgrading the model IR version if ort
-    cannot load it directly (e.g. face_det_lite ships as IR 12)."""
+    cannot load it directly (e.g. face_det_lite ships as IR 12). Falls back
+    to CPU when CoreML cannot compile a model."""
+    active_providers = providers
     try:
-        return ort.InferenceSession(path, sess_options=sess_options, providers=providers)
+        return ort.InferenceSession(
+            path, sess_options=sess_options, providers=active_providers
+        )
     except Exception as exc:
+        if "CoreMLExecutionProvider" in active_providers:
+            active_providers = ["CPUExecutionProvider"]
+            try:
+                return ort.InferenceSession(
+                    path, sess_options=sess_options, providers=active_providers
+                )
+            except Exception as cpu_exc:
+                exc = cpu_exc
         if "IR version" not in str(exc):
             raise
         import onnx  # lazy: only needed for the downgrade path
@@ -169,7 +181,9 @@ def _make_session(
         if model.ir_version > _MAX_IR_VERSION:
             model.ir_version = _MAX_IR_VERSION
         return ort.InferenceSession(
-            model.SerializeToString(), sess_options=sess_options, providers=providers
+            model.SerializeToString(),
+            sess_options=sess_options,
+            providers=active_providers,
         )
 
 
@@ -186,11 +200,12 @@ class AgePipeline:
     ):
         if providers is None:
             avail = ort.get_available_providers()
-            providers = (
-                ["CUDAExecutionProvider", "CPUExecutionProvider"]
-                if "CUDAExecutionProvider" in avail
-                else ["CPUExecutionProvider"]
-            )
+            if "CoreMLExecutionProvider" in avail:
+                providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+            elif "CUDAExecutionProvider" in avail:
+                providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            else:
+                providers = ["CPUExecutionProvider"]
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 

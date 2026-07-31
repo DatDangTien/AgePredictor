@@ -124,7 +124,13 @@ class FaceAlignPipeline:
         self.score_threshold = score_threshold
         self.nms_iou = nms_iou
 
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        available_providers = ort.get_available_providers()
+        if "CoreMLExecutionProvider" in available_providers:
+            providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+        elif "CUDAExecutionProvider" in available_providers:
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        else:
+            providers = ["CPUExecutionProvider"]
         self.session = ort.InferenceSession(model_path, providers=providers)
         self.input_name = self.session.get_inputs()[0].name
         self.output_names = [o.name for o in self.session.get_outputs()]
