@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Benchmark the deployed face, age, and gender ONNX pipeline.
 
-All-Age-Faces filenames encode age as ``NNNNNAxx.jpg``. They do not encode
-gender and do not include face bounding boxes, so this benchmark reports:
+All-Age-Faces filenames encode age as ``NNNNNAxx.jpg``. The image id also
+defines the official gender label: 00000-07380 are Female and 07381-13321 are
+Male. The flat image directory does not include face bounding boxes, so this
+benchmark reports:
 
 * face-detector latency and detection coverage (not AP/IoU accuracy);
 * age latency and accuracy against the filename age;
-* gender latency, prediction distribution, and confidence (not accuracy);
+* gender latency, accuracy, confusion matrix, F1, ROC-AUC, and PR-AUC;
 * end-to-end pipeline latency.
 """
 
@@ -42,6 +44,18 @@ AAF_FILENAME_PATTERN = re.compile(
     re.IGNORECASE,
 )
 DEFAULT_EXPECTED_COUNT = 13_322
+AAF_LAST_FEMALE_ID = 7_380
+AGE_INTERVALS: tuple[tuple[str, int, int], ...] = (
+    ("0-12", 0, 12),
+    ("13-19", 13, 19),
+    ("20-29", 20, 29),
+    ("30-39", 30, 39),
+    ("40-49", 40, 49),
+    ("50-59", 50, 59),
+    ("60-69", 60, 69),
+    ("70-79", 70, 79),
+    ("80-89", 80, 89),
+)
 DEFAULT_MODELS_DIR = REPO_ROOT / "models"
 DEFAULT_WANDB_PROJECT = "AgeGenderPredictor"
 
@@ -51,6 +65,7 @@ class AAFRecord:
     path: Path
     image_id: int
     age: int
+    gender_label: str
 
 
 @dataclass(frozen=True)
@@ -93,6 +108,7 @@ class BenchmarkMeasurements:
     pipeline_ms: list[float] = field(default_factory=list)
     age_predictions: list[float] = field(default_factory=list)
     age_labels: list[int] = field(default_factory=list)
+    gender_labels: list[str] = field(default_factory=list)
     gender_predictions: list[str] = field(default_factory=list)
     gender_confidences: list[float] = field(default_factory=list)
     female_probabilities: list[float] = field(default_factory=list)
@@ -136,11 +152,13 @@ def load_aaf_records(
         if match is None:
             invalid_names.append(path.name)
             continue
+        image_id = int(match.group("image_id"))
         records.append(
             AAFRecord(
                 path=path,
-                image_id=int(match.group("image_id")),
+                image_id=image_id,
                 age=int(match.group("age")),
+                gender_label=infer_aaf_gender_label(image_id),
             )
         )
 
@@ -160,6 +178,11 @@ def load_aaf_records(
     return records
 
 
+def infer_aaf_gender_label(image_id: int) -> str:
+    """Infer the official All-Age-Faces gender label from the image id."""
+    return "Female" if image_id <= AAF_LAST_FEMALE_ID else "Male"
+
+
 def select_records(
     records: Sequence[AAFRecord],
     limit: int | None,
@@ -176,6 +199,7 @@ def select_records(
 
 def summarize_dataset(records: Sequence[AAFRecord]) -> dict[str, Any]:
     ages = np.asarray([record.age for record in records], dtype=np.int64)
+    gender_counts = Counter(record.gender_label for record in records)
     return {
         "image_count": len(records),
         "age_min": int(ages.min()),
@@ -183,17 +207,15 @@ def summarize_dataset(records: Sequence[AAFRecord]) -> dict[str, Any]:
         "unique_ages": int(np.unique(ages).size),
         "age_bins": {
             f"{start}-{end}": int(np.sum((ages >= start) & (ages <= end)))
-            for start, end in (
-                (0, 9),
-                (10, 19),
-                (20, 29),
-                (30, 39),
-                (40, 49),
-                (50, 59),
-                (60, 69),
-                (70, 79),
-                (80, 89),
-            )
+            for _, start, end in AGE_INTERVALS
+        },
+        "gender_counts": {
+            label: int(gender_counts.get(label, 0))
+            for label in inference_module.GENDER_LABELS
+        },
+        "gender_rates": {
+            label: float(gender_counts.get(label, 0) / len(records))
+            for label in inference_module.GENDER_LABELS
         },
     }
 
@@ -288,6 +310,186 @@ def age_metrics(
     }
 
 
+def age_metrics_by_interval(
+    predictions: Sequence[float],
+    labels: Sequence[int],
+) -> dict[str, dict[str, Any]]:
+    predicted = np.asarray(predictions, dtype=np.float64)
+    expected = np.asarray(labels, dtype=np.float64)
+    result: dict[str, dict[str, Any]] = {}
+
+    for name, start, end in AGE_INTERVALS:
+        mask = (expected >= start) & (expected <= end)
+        if not np.any(mask):
+            result[name] = {
+                "samples": 0,
+                "mae": None,
+                "rmse": None,
+                "median_absolute_error": None,
+                "p90_absolute_error": None,
+                "within_5_years": None,
+                "within_10_years": None,
+            }
+            continue
+
+        interval_error = predicted[mask] - expected[mask]
+        absolute_error = np.abs(interval_error)
+        result[name] = {
+            "samples": int(mask.sum()),
+            "mae": float(absolute_error.mean()),
+            "rmse": float(np.sqrt(np.mean(np.square(interval_error)))),
+            "median_absolute_error": float(np.median(absolute_error)),
+            "p90_absolute_error": float(np.percentile(absolute_error, 90)),
+            "within_5_years": float(np.mean(absolute_error <= 5.0)),
+            "within_10_years": float(np.mean(absolute_error <= 10.0)),
+        }
+
+    return result
+
+
+def _binary_confusion(
+    predictions: Sequence[str],
+    labels: Sequence[str],
+) -> dict[str, int]:
+    true_female_pred_female = sum(
+        true == "Female" and pred == "Female"
+        for true, pred in zip(labels, predictions)
+    )
+    true_female_pred_male = sum(
+        true == "Female" and pred == "Male"
+        for true, pred in zip(labels, predictions)
+    )
+    true_male_pred_female = sum(
+        true == "Male" and pred == "Female"
+        for true, pred in zip(labels, predictions)
+    )
+    true_male_pred_male = sum(
+        true == "Male" and pred == "Male"
+        for true, pred in zip(labels, predictions)
+    )
+    return {
+        "true_female_pred_female": int(true_female_pred_female),
+        "true_female_pred_male": int(true_female_pred_male),
+        "true_male_pred_female": int(true_male_pred_female),
+        "true_male_pred_male": int(true_male_pred_male),
+    }
+
+
+def _safe_divide(numerator: int | float, denominator: int | float) -> float:
+    return float(numerator / denominator) if denominator else 0.0
+
+
+def _f1(precision: float, recall: float) -> float:
+    return float(2.0 * precision * recall / (precision + recall)) if (
+        precision + recall
+    ) else 0.0
+
+
+def _roc_auc_binary(labels: Sequence[str], scores: Sequence[float]) -> float | None:
+    positives = np.asarray([label == "Female" for label in labels], dtype=bool)
+    if positives.size == 0 or positives.all() or (~positives).all():
+        return None
+
+    values = np.asarray(scores, dtype=np.float64)
+    order = np.argsort(values)
+    ranks = np.empty(values.size, dtype=np.float64)
+    index = 0
+    while index < values.size:
+        next_index = index + 1
+        while (
+            next_index < values.size
+            and values[order[next_index]] == values[order[index]]
+        ):
+            next_index += 1
+        average_rank = (index + 1 + next_index) / 2.0
+        ranks[order[index:next_index]] = average_rank
+        index = next_index
+
+    positive_count = int(positives.sum())
+    negative_count = int((~positives).sum())
+    positive_rank_sum = float(ranks[positives].sum())
+    auc = (
+        positive_rank_sum - positive_count * (positive_count + 1) / 2.0
+    ) / (positive_count * negative_count)
+    return float(auc)
+
+
+def _pr_auc_binary(labels: Sequence[str], scores: Sequence[float]) -> float | None:
+    positives = np.asarray([label == "Female" for label in labels], dtype=bool)
+    positive_count = int(positives.sum())
+    if positive_count == 0:
+        return None
+
+    values = np.asarray(scores, dtype=np.float64)
+    order = np.argsort(-values)
+    sorted_positives = positives[order]
+    true_positives = np.cumsum(sorted_positives)
+    ranks = np.arange(1, sorted_positives.size + 1)
+    precision = true_positives / ranks
+    return float(precision[sorted_positives].sum() / positive_count)
+
+
+def gender_metrics(
+    predictions: Sequence[str],
+    labels: Sequence[str],
+    female_probabilities: Sequence[float],
+) -> dict[str, Any]:
+    if not predictions:
+        return {
+            "accuracy": None,
+            "balanced_accuracy": None,
+            "macro_f1": None,
+            "female_accuracy": None,
+            "male_accuracy": None,
+            "female_precision": None,
+            "female_recall": None,
+            "female_f1": None,
+            "male_precision": None,
+            "male_recall": None,
+            "male_f1": None,
+            "roc_auc_female": None,
+            "pr_auc_female": None,
+            "confusion_matrix": {
+                "true_female_pred_female": 0,
+                "true_female_pred_male": 0,
+                "true_male_pred_female": 0,
+                "true_male_pred_male": 0,
+            },
+        }
+
+    confusion = _binary_confusion(predictions, labels)
+    ff = confusion["true_female_pred_female"]
+    fm = confusion["true_female_pred_male"]
+    mf = confusion["true_male_pred_female"]
+    mm = confusion["true_male_pred_male"]
+
+    female_accuracy = _safe_divide(ff, ff + fm)
+    male_accuracy = _safe_divide(mm, mm + mf)
+    female_precision = _safe_divide(ff, ff + mf)
+    female_recall = female_accuracy
+    female_f1 = _f1(female_precision, female_recall)
+    male_precision = _safe_divide(mm, mm + fm)
+    male_recall = male_accuracy
+    male_f1 = _f1(male_precision, male_recall)
+
+    return {
+        "accuracy": _safe_divide(ff + mm, len(predictions)),
+        "balanced_accuracy": float((female_accuracy + male_accuracy) / 2.0),
+        "macro_f1": float((female_f1 + male_f1) / 2.0),
+        "female_accuracy": female_accuracy,
+        "male_accuracy": male_accuracy,
+        "female_precision": female_precision,
+        "female_recall": female_recall,
+        "female_f1": female_f1,
+        "male_precision": male_precision,
+        "male_recall": male_recall,
+        "male_f1": male_f1,
+        "roc_auc_female": _roc_auc_binary(labels, female_probabilities),
+        "pr_auc_female": _pr_auc_binary(labels, female_probabilities),
+        "confusion_matrix": confusion,
+    }
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as model_file:
@@ -375,6 +577,7 @@ def _benchmark_record(
     sample: dict[str, Any] = {
         "filename": record.path.name,
         "age_true": record.age,
+        "gender_true": record.gender_label,
     }
 
     try:
@@ -432,11 +635,13 @@ def _benchmark_record(
         )
         female_probability = _female_probability(gender_output)
         measurements.gender_model_ms.append(gender_model_ms)
+        measurements.gender_labels.append(record.gender_label)
         measurements.gender_predictions.append(predicted_gender)
         measurements.gender_confidences.append(gender_confidence)
         measurements.female_probabilities.append(female_probability)
         sample.update(
             gender_predicted=predicted_gender,
+            gender_correct=predicted_gender == record.gender_label,
             gender_confidence=gender_confidence,
             female_probability=female_probability,
             gender_model_ms=gender_model_ms,
@@ -500,7 +705,7 @@ def _build_result(
                 if len(selected_records) == len(all_records)
                 else "evenly_spaced_over_filename_order"
             ),
-            "gender_ground_truth_available": False,
+            "gender_ground_truth_available": True,
             "bounding_boxes_available": False,
         },
         "face": {
@@ -533,14 +738,22 @@ def _build_result(
                 measurements.age_predictions,
                 measurements.age_labels,
             ),
+            "by_true_age_interval": age_metrics_by_interval(
+                measurements.age_predictions,
+                measurements.age_labels,
+            ),
             "model_latency": latency_summary(measurements.age_model_ms),
         },
         "gender": {
             "measurement": (
-                "latency and prediction distribution; no accuracy without labels"
+                "accuracy, ranking metrics, latency, and prediction distribution"
             ),
             "evaluated_images": gender_count,
-            "accuracy": None,
+            **gender_metrics(
+                measurements.gender_predictions,
+                measurements.gender_labels,
+                measurements.female_probabilities,
+            ),
             "prediction_counts": {
                 label: int(prediction_counts.get(label, 0))
                 for label in inference_module.GENDER_LABELS
@@ -686,6 +899,12 @@ def print_summary(result: dict[str, Any]) -> None:
         f"{percent(age['within_5_years'])} / "
         f"{percent(age['within_10_years'])}"
     )
+    interval_mae = ", ".join(
+        f"{name}: {number(values['mae'], 2)}"
+        for name, values in age["by_true_age_interval"].items()
+        if values["samples"] > 0
+    )
+    print(f"  MAE by true-age interval: {interval_mae}")
     print(
         f"  model latency mean/p50/p95: "
         f"{number(age['model_latency']['mean_ms'])} / "
@@ -694,7 +913,22 @@ def print_summary(result: dict[str, Any]) -> None:
     )
 
     print("\nGender")
-    print("  accuracy: unavailable (dataset has no gender labels)")
+    print(
+        f"  evaluated: {gender['evaluated_images']} | "
+        f"accuracy {percent(gender['accuracy'])} | "
+        f"balanced accuracy {percent(gender['balanced_accuracy'])} | "
+        f"macro F1 {number(gender['macro_f1'], 3)}"
+    )
+    print(
+        f"  female/male accuracy: "
+        f"{percent(gender['female_accuracy'])} / "
+        f"{percent(gender['male_accuracy'])}"
+    )
+    print(
+        f"  female ROC-AUC/PR-AUC: "
+        f"{number(gender['roc_auc_female'], 3)} / "
+        f"{number(gender['pr_auc_female'], 3)}"
+    )
     print(f"  prediction counts: {gender['prediction_counts']}")
     print(
         f"  model latency mean/p50/p95: "
@@ -804,11 +1038,20 @@ def _log_wandb_result(
     metrics = wandb_metrics(result)
     run.log(metrics)
 
+    artifact_metadata = {
+        "schema_version": result.get("schema_version"),
+        "created_at": result.get("created_at"),
+        "processed_images": result.get("pipeline", {}).get("processed_images"),
+        "successful_images": result.get("pipeline", {}).get("successful_images"),
+        "age_mae": result.get("age", {}).get("mae"),
+        "gender_accuracy": result.get("gender", {}).get("accuracy"),
+        "gender_macro_f1": result.get("gender", {}).get("macro_f1"),
+    }
     artifact = wandb.Artifact(
         name=f"benchmark-runtime-{run.id}",
         type="benchmark-result",
         description="Runtime benchmark metrics, per-image results, and failures",
-        metadata=metrics,
+        metadata=artifact_metadata,
     )
     artifact.add_file(
         local_path=str(output_path.expanduser().resolve()),
