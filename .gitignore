@@ -14,3 +14,4 @@ output/
 graphify-out/
 
 .env
+wandb/
