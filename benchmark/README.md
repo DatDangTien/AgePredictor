@@ -6,13 +6,20 @@ This benchmark evaluates the production ONNX pipeline used by the app:
 2. `age.onnx`
 3. `adaface_ir50_ms1mv2_gender.onnx`
 
-The current dataset is All-Age-Faces in a flat `data/` directory. Filenames
-encode age as `NNNNNAxx.jpg`. Gender labels are inferred from the official
-All-Age-Faces id split: `00000`-`07380` is Female and `07381`-`13321` is Male.
-The flat dataset does not include bounding boxes, so face detection is measured
-by coverage rather than AP/IoU.
-
 ## Current Component Structure
+
+Core folder meanings:
+
+| Folder | Meaning |
+|---|---|
+| `app/` | Production-facing inference code that the benchmark should stay aligned with. |
+| `benchmark/` | Dataset-agnostic benchmark runtime, manifest loading, sampling, metric calculation, exports, and workbook-report tooling. |
+| `scripts/` | Tailored dataset/model utility scripts. Each dataset gets its own `prepare_<dataset>.py` parser because filename conventions and labels differ by dataset. |
+| `data/` | Optional in-repo local dataset location. Large datasets may also live outside the repo and be passed with `--data-dir`. |
+| `models/` | Exported ONNX runtime artifacts used by the face, age, and gender pipeline. |
+| `manifests/` | Canonical dataset manifests and reusable sample lists generated before benchmarking. |
+| `output/` | Validation reports, benchmark JSON files, TSV/CSV exports, W&B artifacts, and workbook-report packages. |
+| `tests/` | Focused unit tests for parsers, manifests, sampling, metrics, W&B flattening, and report behavior. |
 
 ```text
 AgePredictor/
@@ -25,19 +32,29 @@ AgePredictor/
 │   ├── manifest.py
 │   ├── metrics.py
 │   ├── sampling.py
-│   └── exporters.py
+│   ├── exporters.py
+│   ├── create_sample_list.py
+│   └── create_workbook_report.py
 │
 ├── scripts/
 │   ├── prepare_all_age_faces.py
 │   ├── prepare_utkface.py
-│   ├── prepare_imdb_wiki.py
-│   └── prepare_megaface.py
+│   └── prepare_<future_dataset>.py
+│
+├── data/
+│   └── <optional_local_dataset_files>/
+│
+├── models/
+│   ├── face_det_lite-onnx-w8a8/
+│   ├── age.onnx
+│   └── adaface_ir50_ms1mv2_gender.onnx
 │
 ├── manifests/
 │   ├── DS001_all_age_faces.csv
 │   ├── DS002_utkface.csv
-│   ├── DS003_megaface.csv
-│   └── DS004_imdb_wiki.csv
+│   ├── DSXXX_<future_dataset>.csv
+│   └── samples/
+│       └── DSXXX_sample_300_seed42.txt
 │
 ├── output/
 │   ├── benchmark_<dataset>_<run_id>.json
@@ -45,8 +62,15 @@ AgePredictor/
 │   ├── benchmark_<dataset>_<run_id>_slices.tsv
 │   ├── benchmark_<dataset>_<run_id>_samples.csv
 │   ├── benchmark_<dataset>_<run_id>_failures.csv
-│   └── validation/
-│       └── <dataset>_validation.json
+│   ├── validation/
+│   │   └── <dataset>_validation.json
+│   └── workbook_reports/
+│       └── <run_id>/
+│           ├── 01_Datasets.tsv
+│           ├── 02_Models.tsv
+│           ├── 03_Experiment_Runs.tsv
+│           ├── 04_Headline_Metrics.tsv
+│           └── 05_Slice_Metrics.tsv
 │
 └── tests/
     ├── test_manifest.py
@@ -62,7 +86,13 @@ canonical CSV manifest instead of re-parsing dataset filenames.
 Flow:
 
 ```text
-raw dataset -> prepare script -> canonical manifest -> optional sample list -> runtime benchmark -> JSON/TSV/CSV outputs
+raw dataset
+  -> dataset-specific prepare script
+  -> canonical manifest
+  -> reusable sample list
+  -> runtime benchmark
+  -> JSON/TSV/CSV outputs
+  -> workbook report TSV package
 ```
 
 Main benchmark components:
@@ -76,10 +106,13 @@ Main benchmark components:
 | `benchmark/sampling.py` | Selects records using `all`, `evenly_spaced`, `random`, `stratified_age_gender`, or a sample list. |
 | `benchmark/exporters.py` | Writes companion result exports such as headline TSV, slice TSV, sample CSV, and failure CSV. |
 | `benchmark/create_sample_list.py` | Creates reusable sample-id files for deterministic benchmark subsets. |
+| `benchmark/create_workbook_report.py` | Packages completed benchmark results into workbook-import TSV files. |
 | `scripts/prepare_all_age_faces.py` | Builds the DS001 All-Age-Faces manifest from local images. |
-| `scripts/prepare_utkface.py` | Builds a UTKFace-style manifest for future DS002 runs. |
+| `scripts/prepare_utkface.py` | Builds the DS002 UTKFace manifest, including `.jpg.chip.jpg` images. |
+| `scripts/prepare_<future_dataset>.py` | Placeholder pattern for future dataset-specific manifest builders. |
 | `manifests/` | Stores canonical dataset manifests and reusable sample lists. |
 | `output/` | Stores benchmark JSON results, validation reports, TSV summaries, CSV sample rows, and failure reports. |
+| `output/workbook_reports/` | Stores sheet-ready TSV packages copied into the benchmark workbook. |
 | `data/` | Recommended in-repo location for local datasets; external dataset paths also work with `--data-dir`. |
 
 The runtime is intentionally dataset-agnostic. If a new dataset has different
@@ -88,20 +121,46 @@ keep `benchmark/benchmark_runtime.py` focused on inference and metrics.
 
 ## Command Flow
 
-Run commands from the repo root:
+Run commands from the repo root. Use the project virtual environment if it
+exists:
 
 ```bash
 cd /Users/trananhchuong/Documents/workspace/AgePredictor
-```
-
-Use the project virtual environment if it exists:
-
-```bash
 source .venv/bin/activate
 ```
 
 If you prefer not to activate the environment, replace `python` below with
 `.venv/bin/python`.
+
+Set these variables for the dataset/run you want to benchmark:
+
+```bash
+DATASET_ID=DSXXX
+DATASET_NAME=your_dataset
+DATASET_VERSION=local
+DATA_DIR=/path/to/your_dataset
+PREPARE_SCRIPT=scripts/prepare_your_dataset.py
+MANIFEST=manifests/${DATASET_ID}_${DATASET_NAME}.csv
+VALIDATION_REPORT=output/validation/${DATASET_ID}_validation.json
+SAMPLE_N=300
+SEED=42
+SAMPLING_STRATEGY=stratified_age_gender
+SAMPLE_LIST=manifests/samples/${DATASET_ID}_sample_${SAMPLE_N}_seed${SEED}.txt
+RUN_ID=RUNXXX_${DATASET_NAME}_WANDB
+CONFIG_ID=CFG001
+PROVIDER=coreml
+RESULT_JSON=output/benchmark_${DATASET_NAME}_${RUN_ID}.json
+REPORT_DIR=output/workbook_reports/${RUN_ID}
+WANDB_RUN_URL=https://wandb.ai/<entity>/<project>/runs/<run-id>
+```
+
+Current examples:
+
+| Dataset | Suggested values |
+|---|---|
+| All-Age-Faces | `DATASET_ID=DS001`, `DATASET_NAME=all_age_faces`, `PREPARE_SCRIPT=scripts/prepare_all_age_faces.py`, `SAMPLING_STRATEGY=evenly_spaced` |
+| UTKFace | `DATASET_ID=DS002`, `DATASET_NAME=utkface`, `PREPARE_SCRIPT=scripts/prepare_utkface.py`, `DATA_DIR=~/Downloads/archive/UTKFace`, `SAMPLING_STRATEGY=stratified_age_gender` |
+| Future dataset | Add `scripts/prepare_your_dataset.py`, then set `DATASET_ID`, `DATASET_NAME`, `DATA_DIR`, and `PREPARE_SCRIPT` to match it. |
 
 ### 1. Confirm Runtime Models
 
@@ -122,38 +181,17 @@ python scripts/onnx_export.py
 
 ### 2. Prepare The Dataset Manifest
 
-For All-Age-Faces in the repo's `data/` directory:
+Each dataset needs a tailored prepare script because filename conventions,
+labels, metadata, and validation rules differ across datasets. The prepare
+script writes one canonical manifest for the benchmark runtime:
 
 ```bash
-python scripts/prepare_all_age_faces.py \
-  --data-dir data \
-  --dataset-id DS001 \
-  --dataset-version official \
-  --output manifests/DS001_all_age_faces.csv \
-  --validation-report output/validation/DS001_validation.json
-```
-
-If the dataset lives elsewhere, keep the same command and point `--data-dir` to
-that folder:
-
-```bash
-python scripts/prepare_all_age_faces.py \
-  --data-dir /path/to/All-Age-Faces \
-  --dataset-id DS001 \
-  --dataset-version official \
-  --output manifests/DS001_all_age_faces.csv \
-  --validation-report output/validation/DS001_validation.json
-```
-
-For a future UTKFace-style dataset:
-
-```bash
-python scripts/prepare_utkface.py \
-  --data-dir /path/to/UTKFace \
-  --dataset-id DS002 \
-  --dataset-version local \
-  --output manifests/DS002_utkface.csv \
-  --validation-report output/validation/DS002_validation.json
+python "$PREPARE_SCRIPT" \
+  --data-dir "$DATA_DIR" \
+  --dataset-id "$DATASET_ID" \
+  --dataset-version "$DATASET_VERSION" \
+  --output "$MANIFEST" \
+  --validation-report "$VALIDATION_REPORT"
 ```
 
 ### 3. Create A Reusable Sample List
@@ -162,52 +200,48 @@ This creates a deterministic 300-image sample for repeated benchmark runs:
 
 ```bash
 python benchmark/create_sample_list.py \
-  --manifest manifests/DS001_all_age_faces.csv \
-  --strategy evenly_spaced \
-  --limit 300 \
-  --seed 42 \
-  --output manifests/samples/DS001_sample_300_seed42.txt
+  --manifest "$MANIFEST" \
+  --strategy "$SAMPLING_STRATEGY" \
+  --limit "$SAMPLE_N" \
+  --seed "$SEED" \
+  --output "$SAMPLE_LIST"
 ```
 
-For label-balanced sampling, use:
+Useful sampling strategies:
 
-```bash
-python benchmark/create_sample_list.py \
-  --manifest manifests/DS001_all_age_faces.csv \
-  --strategy stratified_age_gender \
-  --limit 300 \
-  --seed 42 \
-  --output manifests/samples/DS001_sample_300_seed42.txt
-```
+- `evenly_spaced`: deterministic coverage over manifest order.
+- `random`: deterministic random sample using `--seed`.
+- `stratified_age`: balanced by true-age interval when age labels exist.
+- `stratified_age_gender`: balanced by true-age interval and gender when both labels exist.
 
 ### 4. Run The Benchmark
-
-Recommended repeatable All-Age-Faces run:
-
-```bash
-python benchmark/benchmark_runtime.py \
-  --manifest manifests/DS001_all_age_faces.csv \
-  --sample-list manifests/samples/DS001_sample_300_seed42.txt \
-  --dataset-id DS001 \
-  --run-id RUN001 \
-  --config-id CFG001 \
-  --provider coreml \
-  --warmup-runs 10 \
-  --output output/benchmark_aaf_RUN001.json
-```
 
 Quick smoke test:
 
 ```bash
 python benchmark/benchmark_runtime.py \
-  --manifest manifests/DS001_all_age_faces.csv \
-  --dataset-id DS001 \
-  --run-id SMOKE001 \
-  --config-id CFG001 \
+  --manifest "$MANIFEST" \
+  --dataset-id "$DATASET_ID" \
+  --run-id "${RUN_ID}_SMOKE" \
+  --config-id "$CONFIG_ID" \
   --limit 5 \
   --provider cpu \
   --warmup-runs 0 \
-  --output output/benchmark_smoke.json
+  --output "output/benchmark_${DATASET_NAME}_${RUN_ID}_smoke.json"
+```
+
+Full repeatable run:
+
+```bash
+python benchmark/benchmark_runtime.py \
+  --manifest "$MANIFEST" \
+  --sample-list "$SAMPLE_LIST" \
+  --dataset-id "$DATASET_ID" \
+  --run-id "$RUN_ID" \
+  --config-id "$CONFIG_ID" \
+  --provider "$PROVIDER" \
+  --warmup-runs 10 \
+  --output "$RESULT_JSON"
 ```
 
 CUDA machines can use `--provider cuda`; macOS should usually use
@@ -220,15 +254,15 @@ artifact:
 
 ```bash
 python benchmark/benchmark_runtime.py \
-  --manifest manifests/DS001_all_age_faces.csv \
-  --sample-list manifests/samples/DS001_sample_300_seed42.txt \
-  --dataset-id DS001 \
-  --run-id RUN001_WANDB \
-  --config-id CFG001 \
-  --provider coreml \
+  --manifest "$MANIFEST" \
+  --sample-list "$SAMPLE_LIST" \
+  --dataset-id "$DATASET_ID" \
+  --run-id "$RUN_ID" \
+  --config-id "$CONFIG_ID" \
+  --provider "$PROVIDER" \
   --warmup-runs 10 \
   --wandb \
-  --output output/benchmark_aaf_RUN001_WANDB.json
+  --output "$RESULT_JSON"
 ```
 
 ### 6. Review Outputs
@@ -236,17 +270,44 @@ python benchmark/benchmark_runtime.py \
 Each benchmark run writes the main JSON output plus companion files next to it:
 
 ```text
-output/benchmark_aaf_RUN001.json
-output/benchmark_aaf_RUN001_headline.tsv
-output/benchmark_aaf_RUN001_slices.tsv
-output/benchmark_aaf_RUN001_samples.csv
-output/benchmark_aaf_RUN001_failures.csv
+output/benchmark_<dataset>_<run_id>.json
+output/benchmark_<dataset>_<run_id>_headline.tsv
+output/benchmark_<dataset>_<run_id>_slices.tsv
+output/benchmark_<dataset>_<run_id>_samples.csv
+output/benchmark_<dataset>_<run_id>_failures.csv
 ```
 
 Use the JSON for complete metrics and per-sample details. Use the TSV/CSV files
 for quick spreadsheet review and reporting.
 
-### 7. Run Tests
+### 7. Create Workbook Import Files
+
+To package a completed run for `AgePredictor_Benchmarking_Ablation_Template.xlsx`,
+create sheet-ready TSV files:
+
+```bash
+python benchmark/create_workbook_report.py \
+  --result "$RESULT_JSON" \
+  --output-dir "$REPORT_DIR" \
+  --dataset-name "$DATASET_NAME" \
+  --dataset-local-path "$DATA_DIR" \
+  --wandb-run "$WANDB_RUN_URL"
+```
+
+Copy or import the sheet rows from the run-specific subfolder under
+`output/workbook_reports/`. The report folder contains import-ready rows for:
+
+```text
+output/workbook_reports/<run_id>/01_Datasets.tsv
+output/workbook_reports/<run_id>/02_Models.tsv
+output/workbook_reports/<run_id>/03_Experiment_Runs.tsv
+output/workbook_reports/<run_id>/04_Headline_Metrics.tsv
+output/workbook_reports/<run_id>/05_Slice_Metrics.tsv
+```
+
+It also copies the per-sample CSV and failure CSV for verification.
+
+### 8. Run Tests
 
 Run the focused benchmark tests after changing benchmark logic:
 
@@ -269,6 +330,7 @@ python -m py_compile \
   benchmark/exporters.py \
   benchmark/benchmark_runtime.py \
   benchmark/create_sample_list.py \
+  benchmark/create_workbook_report.py \
   scripts/prepare_all_age_faces.py \
   scripts/prepare_utkface.py
 ```

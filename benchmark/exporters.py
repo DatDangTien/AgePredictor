@@ -73,20 +73,105 @@ def export_slice_tsv(result: dict[str, Any], path: Path) -> Path:
     rows: list[dict[str, Any]] = []
     run_id = result["run"]["run_id"]
     for interval, metrics in result["age"].get("by_true_age_interval", {}).items():
-        for metric in ("mae", "rmse", "mean_signed_error", "within_5_years", "within_10_years"):
+        sample_n = metrics.get("samples")
+        age_metrics = (
+            ("Samples", "samples", "count"),
+            ("MAE", "mae", "years"),
+            ("RMSE", "rmse", "years"),
+            ("Within 5 Years", "within_5_years", "proportion"),
+            ("Within 10 Years", "within_10_years", "proportion"),
+            ("Mean Signed Error", "mean_signed_error", "years"),
+            ("Median Absolute Error", "median_absolute_error", "years"),
+        )
+        for label, metric, unit in age_metrics:
             rows.append(
                 {
                     "Run_ID": run_id,
-                    "Task": "age",
-                    "Slice_Type": "true_age_interval",
+                    "Task": "Age Prediction",
+                    "Slice_Type": "True Age Interval",
                     "Slice_Value": interval,
-                    "Metric": metric,
+                    "Metric": label,
                     "Value": metrics.get(metric),
-                    "Unit": "years" if metric in ("mae", "rmse", "mean_signed_error") else "proportion",
-                    "Sample_N": metrics.get("samples"),
+                    "Unit": unit,
+                    "Sample_N": sample_n,
                 }
             )
+    rows.extend(_gender_slice_rows(result))
     return _write_rows(path, SLICE_COLUMNS, rows, delimiter="\t")
+
+
+def _gender_slice_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
+    gender = result.get("gender", {})
+    confusion = gender.get("confusion_matrix", {})
+    ff = confusion.get("true_female_pred_female", 0)
+    fm = confusion.get("true_female_pred_male", 0)
+    mf = confusion.get("true_male_pred_female", 0)
+    mm = confusion.get("true_male_pred_male", 0)
+    run_id = result["run"]["run_id"]
+    class_rows = [
+        ("Female", ff + fm, (
+            ("Precision", "female_precision"),
+            ("Recall", "female_recall"),
+            ("F1", "female_f1"),
+            ("Accuracy", "female_accuracy"),
+        )),
+        ("Male", mf + mm, (
+            ("Precision", "male_precision"),
+            ("Recall", "male_recall"),
+            ("F1", "male_f1"),
+            ("Accuracy", "male_accuracy"),
+        )),
+    ]
+
+    rows: list[dict[str, Any]] = []
+    for label, sample_n, metrics in class_rows:
+        rows.append(
+            {
+                "Run_ID": run_id,
+                "Task": "Gender Prediction",
+                "Slice_Type": "True Class",
+                "Slice_Value": label,
+                "Metric": "Samples",
+                "Value": sample_n,
+                "Unit": "count",
+                "Sample_N": sample_n,
+            }
+        )
+        for metric_label, metric_key in metrics:
+            rows.append(
+                {
+                    "Run_ID": run_id,
+                    "Task": "Gender Prediction",
+                    "Slice_Type": "True Class",
+                    "Slice_Value": label,
+                    "Metric": metric_label,
+                    "Value": gender.get(metric_key),
+                    "Unit": "proportion",
+                    "Sample_N": sample_n,
+                }
+            )
+
+    confusion_rows = (
+        ("True Female Pred Female", "true_female_pred_female"),
+        ("True Female Pred Male", "true_female_pred_male"),
+        ("True Male Pred Female", "true_male_pred_female"),
+        ("True Male Pred Male", "true_male_pred_male"),
+    )
+    evaluated = gender.get("evaluated_images", ff + fm + mf + mm)
+    for label, key in confusion_rows:
+        rows.append(
+            {
+                "Run_ID": run_id,
+                "Task": "Gender Prediction",
+                "Slice_Type": "Confusion Matrix",
+                "Slice_Value": label,
+                "Metric": "Count",
+                "Value": confusion.get(key),
+                "Unit": "count",
+                "Sample_N": evaluated,
+            }
+        )
+    return rows
 
 
 def export_samples_csv(result: dict[str, Any], path: Path) -> Path:

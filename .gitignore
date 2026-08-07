@@ -5,12 +5,15 @@ data/
 paper/
 *.log
 output/
-
+.venv/
 *.jpg
 *.png
 
 # Graphify local states, virtual environments, and caches
 .graphify*
 graphify-out/
+benchmark/wandb/
 
 .env
+
+wandb/

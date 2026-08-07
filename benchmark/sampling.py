@@ -23,7 +23,7 @@ def select_records(
         return selected, _metadata("from_sample_list", selected, sample_list_path)
 
     if strategy == "all":
-        selected = list(records)
+        selected = _all(records, limit)
     elif strategy == "evenly_spaced":
         selected = _evenly_spaced(records, limit)
     elif strategy == "random":
@@ -38,6 +38,14 @@ def select_records(
         raise ValueError(f"Unsupported sampling strategy: {strategy}")
 
     return selected, _metadata(strategy, selected, sample_list_path)
+
+
+def _all(
+    records: Sequence[BenchmarkRecord],
+    limit: int | None,
+) -> list[BenchmarkRecord]:
+    selected = list(records)
+    return selected if limit is None or limit <= 0 else selected[:limit]
 
 
 def _metadata(

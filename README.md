@@ -80,33 +80,49 @@ reused; pass `--force` to rebuild from available source checkpoints.
 
 ### Benchmarking
 
-`model_benchmark.ipynb` and `tests/benchmark_runtime.py` benchmark the three
-models used by the application against the flat All-Age-Faces images in
-`data/`. Run a deterministic, evenly spaced 100-image validation sample first:
+`model_benchmark.ipynb` and `benchmark/benchmark_runtime.py` benchmark the three
+models used by the application through a canonical manifest. Prepare the
+All-Age-Faces manifest from images in `data/` first:
 
 ```bash
-python3 tests/benchmark_runtime.py --limit 100
+python3 scripts/prepare_all_age_faces.py \
+  --data-dir data \
+  --output manifests/DS001_all_age_faces.csv \
+  --validation-report output/validation/DS001_validation.json
 ```
 
-Run the complete 13,322-image corpus after the validation sample succeeds:
+Run a deterministic, evenly spaced 100-image validation sample:
 
 ```bash
-python3 tests/benchmark_runtime.py --limit 0
+python3 benchmark/benchmark_runtime.py \
+  --manifest manifests/DS001_all_age_faces.csv \
+  --dataset-id DS001 \
+  --run-id RUN001_SMOKE \
+  --config-id CFG001 \
+  --limit 100 \
+  --sampling evenly_spaced
 ```
 
 Add `--wandb` to log aggregate metrics and the JSON result to W&B:
 
 ```bash
-python3 tests/benchmark_runtime.py --limit 100 --wandb
+python3 benchmark/benchmark_runtime.py \
+  --manifest manifests/DS001_all_age_faces.csv \
+  --dataset-id DS001 \
+  --run-id RUN001_WANDB \
+  --config-id CFG001 \
+  --limit 100 \
+  --sampling evenly_spaced \
+  --wandb
 ```
 
-Results are written to `output/benchmark_runtime.json`, including aggregate
-metrics, per-image predictions and timings, failures, ONNX providers, and model
-hashes. All-Age-Faces filenames provide age labels, so the benchmark reports
-age accuracy. This copy of the dataset has neither gender labels nor bounding
-boxes, so gender accuracy and detector AP/IoU are intentionally not reported;
-gender prediction distribution and face-detection coverage are reported
-instead.
+Results are written to JSON plus workbook-compatible headline, slice, sample,
+and failure exports. The runtime records manifest hash, model hashes, selected
+sample IDs, providers, per-image predictions/timings, failures, and aggregate
+metrics. All-Age-Faces provides age labels and gender labels through its
+official image-id split, so the benchmark reports age error metrics and gender
+accuracy/F1/AUC. The flat image data still has no bounding boxes, so face
+detection is measured by coverage rather than AP/IoU.
 
 ## Quick start
 
