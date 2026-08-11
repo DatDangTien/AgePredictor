@@ -39,6 +39,7 @@ AgePredictor/
 ├── scripts/
 │   ├── prepare_all_age_faces.py
 │   ├── prepare_utkface.py
+│   ├── prepare_fairface.py
 │   └── prepare_<future_dataset>.py
 │
 ├── data/
@@ -52,6 +53,7 @@ AgePredictor/
 ├── manifests/
 │   ├── DS001_all_age_faces.csv
 │   ├── DS002_utkface.csv
+│   ├── DS003_fairface.csv
 │   ├── DSXXX_<future_dataset>.csv
 │   └── samples/
 │       └── DSXXX_sample_300_seed42.txt
@@ -76,6 +78,7 @@ AgePredictor/
     ├── test_manifest.py
     ├── test_prepare_all_age_faces.py
     ├── test_prepare_utkface.py
+    ├── test_prepare_fairface.py
     └── test_benchmark_runtime.py
 ```
 
@@ -109,6 +112,7 @@ Main benchmark components:
 | `benchmark/create_workbook_report.py` | Packages completed benchmark results into workbook-import TSV files. |
 | `scripts/prepare_all_age_faces.py` | Builds the DS001 All-Age-Faces manifest from local images. |
 | `scripts/prepare_utkface.py` | Builds the DS002 UTKFace manifest, including `.jpg.chip.jpg` images. |
+| `scripts/prepare_fairface.py` | Builds one DS003 FairFace manifest from the official train and validation label CSVs and image folders. |
 | `scripts/prepare_<future_dataset>.py` | Placeholder pattern for future dataset-specific manifest builders. |
 | `manifests/` | Stores canonical dataset manifests and reusable sample lists. |
 | `output/` | Stores benchmark JSON results, validation reports, TSV summaries, CSV sample rows, and failure reports. |
@@ -160,6 +164,7 @@ Current examples:
 |---|---|
 | All-Age-Faces | `DATASET_ID=DS001`, `DATASET_NAME=all_age_faces`, `PREPARE_SCRIPT=scripts/prepare_all_age_faces.py`, `SAMPLING_STRATEGY=evenly_spaced` |
 | UTKFace | `DATASET_ID=DS002`, `DATASET_NAME=utkface`, `PREPARE_SCRIPT=scripts/prepare_utkface.py`, `DATA_DIR=~/Downloads/archive/UTKFace`, `SAMPLING_STRATEGY=stratified_age_gender` |
+| FairFace | `DATASET_ID=DS003`, `DATASET_NAME=fairface`, `PREPARE_SCRIPT=scripts/prepare_fairface.py`, `DATA_DIR=data/FairFace/fairface-img-margin025-trainval`, `SAMPLING_STRATEGY=stratified_age_gender` |
 | Future dataset | Add `scripts/prepare_your_dataset.py`, then set `DATASET_ID`, `DATASET_NAME`, `DATA_DIR`, and `PREPARE_SCRIPT` to match it. |
 
 ### 1. Confirm Runtime Models
@@ -193,6 +198,23 @@ python "$PREPARE_SCRIPT" \
   --output "$MANIFEST" \
   --validation-report "$VALIDATION_REPORT"
 ```
+
+FairFace requires the official train and validation label CSVs in addition to
+the `train/` and `val/` image folders. `prepare_fairface.py` looks for
+`fairface_label_train.csv` and `fairface_label_val.csv` inside `--data-dir` or
+its parent. Use `--train-labels` and `--val-labels` when they live elsewhere:
+
+```bash
+python scripts/prepare_fairface.py \
+  --data-dir data/FairFace/fairface-img-margin025-trainval \
+  --train-labels data/FairFace/fairface_label_train.csv \
+  --val-labels data/FairFace/fairface_label_val.csv
+```
+
+FairFace provides age intervals rather than exact ages. The default stores a
+representative proxy age so the existing age metrics can run and records the
+source interval in `metadata_json`. Use `--age-label-policy blank` to avoid
+exact-age accuracy metrics while retaining age inference latency.
 
 ### 3. Create A Reusable Sample List
 
@@ -316,7 +338,8 @@ python -m unittest \
   tests/test_benchmark_runtime.py \
   tests/test_manifest.py \
   tests/test_prepare_all_age_faces.py \
-  tests/test_prepare_utkface.py
+  tests/test_prepare_utkface.py \
+  tests/test_prepare_fairface.py
 ```
 
 For a syntax-only check:
@@ -332,7 +355,8 @@ python -m py_compile \
   benchmark/create_sample_list.py \
   benchmark/create_workbook_report.py \
   scripts/prepare_all_age_faces.py \
-  scripts/prepare_utkface.py
+  scripts/prepare_utkface.py \
+  scripts/prepare_fairface.py
 ```
 
 ## Latest Reference Run
