@@ -57,6 +57,14 @@ AGE_INTERVALS: tuple[tuple[str, int, int], ...] = (
     ("80-89", 80, 89),
 )
 DEFAULT_MODELS_DIR = REPO_ROOT / "models"
+DEFAULT_DATA_DIR = (
+    REPO_ROOT
+    / "data"
+    / "All_Age_Faces"
+    / "All-Age-Faces-Dataset"
+    / "All-Age-Faces Dataset"
+    / "aglined faces"
+)
 DEFAULT_WANDB_PROJECT = "AgeGenderPredictor"
 
 
@@ -70,7 +78,7 @@ class AAFRecord:
 
 @dataclass(frozen=True)
 class BenchmarkConfig:
-    data_dir: Path = REPO_ROOT / "data"
+    data_dir: Path = DEFAULT_DATA_DIR
     output_path: Path = REPO_ROOT / "output" / "benchmark_runtime.json"
     face_model_path: Path = (
         DEFAULT_MODELS_DIR / "face_det_lite-onnx-w8a8" / "face_det_lite.onnx"
@@ -1066,8 +1074,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=REPO_ROOT / "data",
-        help="Flat directory containing NNNNNAxx.jpg images",
+        default=DEFAULT_DATA_DIR,
+        help=(
+            "Flat directory containing NNNNNAxx.jpg images "
+            f"(default: {DEFAULT_DATA_DIR})"
+        ),
     )
     parser.add_argument(
         "--output",
