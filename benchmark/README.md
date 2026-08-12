@@ -116,7 +116,8 @@ Main benchmark components:
 | `scripts/run_fairface_margin025_benchmark.sh` | Prepares and benchmarks the complete FairFace margin 0.25 dataset on CUDA with W&B logging. |
 | `scripts/run_fairface_margin125_benchmark.sh` | Prepares and benchmarks the complete FairFace margin 1.25 dataset on CUDA with W&B logging. |
 | `scripts/prepare_adience.py` | Builds separate DS004 manifests for the Adience aligned and cropped-face variants. |
-| `scripts/run_adience_benchmarks.sh` | Prepares and benchmarks both Adience variants with progress logs and separate W&B runs. |
+| `scripts/run_adience_aligned_benchmark.sh` | Prepares and benchmarks only the Adience aligned variant. |
+| `scripts/run_adience_faces_benchmark.sh` | Prepares and benchmarks only the Adience cropped-face variant. |
 | `scripts/prepare_<future_dataset>.py` | Placeholder pattern for future dataset-specific manifest builders. |
 | `manifests/` | Stores canonical dataset manifests and reusable sample lists. |
 | `output/` | Stores benchmark JSON results, validation reports, TSV summaries, CSV sample rows, and failure reports. |
@@ -234,10 +235,11 @@ names, and W&B tags:
 Manifest preparation prints a start message, periodic progress every 1,000
 label rows, a summary for each split, and a final validation scan message.
 
-Run both complete Adience variants sequentially with:
+Run each Adience image variant independently with:
 
 ```bash
-./scripts/run_adience_benchmarks.sh
+./scripts/run_adience_aligned_benchmark.sh
+./scripts/run_adience_faces_benchmark.sh
 ```
 
 The runner defaults to CUDA, the full five-fold label set, blank proxy ages,
@@ -247,11 +249,11 @@ and W&B online mode. Override settings with environment variables, for example:
 DATA_DIR=/path/to/adience \
 WANDB_ENTITY=my-team \
 PREPARE_PROGRESS_EVERY=500 \
-./scripts/run_adience_benchmarks.sh
+./scripts/run_adience_aligned_benchmark.sh
 ```
 
-Console output is also saved under `output/logs/`. Each variant receives its
-own manifest, validation report, benchmark JSON, and W&B run.
+Console output is also saved under `output/logs/`. Each script creates its own
+manifest, validation report, benchmark JSON, and W&B run.
 
 ### 3. Create A Reusable Sample List
 
