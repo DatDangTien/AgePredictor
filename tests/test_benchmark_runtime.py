@@ -151,7 +151,7 @@ class WandbMetricFlatteningTests(unittest.TestCase):
             3,
         )
 
-    def test_logs_all_populated_aggregate_fields_and_skips_large_rows(self) -> None:
+    def test_logs_every_aggregate_field_and_skips_large_rows(self) -> None:
         result = {
             "schema_version": "2.0",
             "run": {
@@ -185,13 +185,13 @@ class WandbMetricFlatteningTests(unittest.TestCase):
         self.assertEqual(summary["environment/python"], "3.12.0")
         self.assertEqual(summary["config/providers_requested"], '["CUDA"]')
         self.assertIs(summary["config/enabled"], True)
-        self.assertNotIn("config/empty_value", summary)
+        self.assertEqual(summary["config/empty_value"], "")
         self.assertEqual(summary["models/face/path"], "/models/face.onnx")
-        self.assertNotIn("run/git_commit", summary)
+        self.assertIsNone(summary["run/git_commit"])
         self.assertNotIn("run/selected_sample_ids", summary)
         self.assertFalse(any(key.startswith("samples/") for key in summary))
         self.assertFalse(any(key.startswith("failures/") for key in summary))
-        self.assertFalse(any(key.startswith("exports/") for key in summary))
+        self.assertEqual(summary["exports/headline"], "/output/headline.tsv")
         self.assertEqual(metrics["run/sample_count"], 2)
         self.assertEqual(metrics["config/warmup_runs"], 10)
         self.assertEqual(metrics["models/face/size_bytes"], 123)
@@ -205,7 +205,7 @@ class WandbMetricFlatteningTests(unittest.TestCase):
                 calls["artifact_kwargs"] = kwargs
 
             def add_file(self, **kwargs: object) -> None:
-                calls["artifact_file"] = kwargs
+                calls.setdefault("artifact_files", []).append(kwargs)
 
         class FakeRun:
             id = "run-123"
@@ -231,8 +231,12 @@ class WandbMetricFlatteningTests(unittest.TestCase):
         }
 
         with tempfile.TemporaryDirectory() as directory:
-            output_path = Path(directory) / "benchmark.json"
+            root = Path(directory)
+            output_path = root / "benchmark.json"
+            samples_path = root / "benchmark_samples.csv"
             output_path.write_text("{}", encoding="utf-8")
+            samples_path.write_text("sample_id\nsample-1\n", encoding="utf-8")
+            result["exports"] = {"samples_csv": str(samples_path)}
             with mock.patch.dict("sys.modules", {"wandb": wandb}):
                 _log_wandb_result(FakeRun(), result, output_path)
 
@@ -245,6 +249,13 @@ class WandbMetricFlatteningTests(unittest.TestCase):
         self.assertGreater(len(calls["metrics"]), 100)
         self.assertEqual(FakeRun.summary["run/run_id"], "RUN001")
         self.assertEqual(FakeRun.summary["schema_version"], "2.0")
+        artifact_files = calls["artifact_files"]
+        self.assertIsInstance(artifact_files, list)
+        self.assertEqual(len(artifact_files), 2)
+        self.assertEqual(
+            {entry["name"] for entry in artifact_files},
+            {"benchmark.json", "benchmark_samples.csv"},
+        )
 
 
 if __name__ == "__main__":

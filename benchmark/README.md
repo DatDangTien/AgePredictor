@@ -118,6 +118,8 @@ Main benchmark components:
 | `scripts/prepare_adience.py` | Builds separate DS004 manifests for the Adience aligned and cropped-face variants. |
 | `scripts/run_adience_aligned_benchmark.sh` | Prepares and benchmarks only the Adience aligned variant. |
 | `scripts/run_adience_faces_benchmark.sh` | Prepares and benchmarks only the Adience cropped-face variant. |
+| `scripts/prepare_appa_real.py` | Builds one DS005 manifest from the APPA-REAL train, valid, and test splits. |
+| `scripts/run_appa_real_benchmark.sh` | Prepares and benchmarks the complete APPA-REAL dataset with W&B logging. |
 | `scripts/prepare_<future_dataset>.py` | Placeholder pattern for future dataset-specific manifest builders. |
 | `manifests/` | Stores canonical dataset manifests and reusable sample lists. |
 | `output/` | Stores benchmark JSON results, validation reports, TSV summaries, CSV sample rows, and failure reports. |
@@ -255,6 +257,17 @@ PREPARE_PROGRESS_EVERY=500 \
 Console output is also saved under `output/logs/`. Each script creates its own
 manifest, validation report, benchmark JSON, and W&B run.
 
+Run every APPA-REAL split in one W&B benchmark with:
+
+```bash
+./scripts/run_appa_real_benchmark.sh
+```
+
+The runner defaults to `data/APPA-REAL/appa-real-release`, CUDA, and W&B online
+mode. It uses `--sampling all --limit 0`, so the runtime does not apply its
+default 100-image limit. Override `DATA_DIR`, `PROVIDER`, `WANDB_ENTITY`, or any
+other runner variable through the environment when needed.
+
 ### 3. Create A Reusable Sample List
 
 This creates a deterministic 300-image sample for repeated benchmark runs:
@@ -310,8 +323,9 @@ CUDA machines can use `--provider cuda`; macOS should usually use
 
 ### 5. Optional W&B Logging
 
-Add `--wandb` to log scalar metrics and save the JSON result as a compact W&B
-artifact:
+Add `--wandb` to log scalar metrics and every aggregate result field as W&B
+run-summary columns. The JSON result and all companion TSV/CSV exports are
+saved together as a W&B artifact:
 
 ```bash
 python benchmark/benchmark_runtime.py \
@@ -574,11 +588,12 @@ preserved in `samples`.
 
 ## W&B Logging
 
-W&B receives every populated aggregate scalar from the benchmark result. Numeric
-values are logged as metrics, while numeric, boolean, and text values are also
-written to the run summary so they appear as run-table columns. This includes
-run identity, environment, configuration, provider, model, dataset, face, age,
-gender, and pipeline fields. Empty and `null` values are omitted. For example:
+W&B receives every aggregate scalar from the benchmark result, including null
+and empty values so runs keep a consistent column schema. Numeric values are
+logged as metrics, while numeric, boolean, text, null, and short scalar-list
+values are also written to the run summary so they appear as run-table columns.
+This includes run identity, environment, configuration, provider, model,
+dataset, face, age, gender, pipeline, and export fields. For example:
 
 - `age/mae`
 - `age/interval_aware/mae`
@@ -590,6 +605,6 @@ gender, and pipeline fields. Empty and `null` values are omitted. For example:
 
 Large row collections (`samples` and `failures`) and repeated sample-ID lists
 are not expanded into thousands of W&B summary columns. They remain available
-in the complete JSON result artifact and the generated CSV exports. Artifact
-metadata itself is intentionally compact to stay below W&B's 100-key metadata
-limit.
+in the complete JSON result and generated CSV exports, all of which are attached
+to the W&B artifact. Artifact metadata itself is intentionally compact to stay
+below W&B's 100-key metadata limit.

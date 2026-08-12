@@ -125,7 +125,7 @@ class TimedSession:
         return getattr(self.session, name)
 
 
-WANDB_EXCLUDED_ROOTS = {"exports", "failures", "samples"}
+WANDB_EXCLUDED_ROOTS = {"failures", "samples"}
 WANDB_EXCLUDED_SEQUENCE_PATHS = {
     "dataset/sampling/sample_ids",
     "run/selected_sample_ids",
@@ -134,9 +134,9 @@ WANDB_EXCLUDED_SEQUENCE_PATHS = {
 
 def wandb_summary_values(
     result: dict[str, Any],
-) -> dict[str, bool | int | float | str]:
-    """Flatten populated aggregate result fields for the W&B run table."""
-    summary: dict[str, bool | int | float | str] = {}
+) -> dict[str, bool | int | float | str | None]:
+    """Flatten every aggregate result field for the W&B run table."""
+    summary: dict[str, bool | int | float | str | None] = {}
 
     def collect(value: Any, prefix: str) -> None:
         if isinstance(value, dict):
@@ -146,7 +146,8 @@ def wandb_summary_values(
                 nested_prefix = f"{prefix}/{key}" if prefix else key
                 collect(nested_value, nested_prefix)
             return
-        if value is None or value == "":
+        if value is None:
+            summary[prefix] = None
             return
         if isinstance(value, bool):
             summary[prefix] = value
@@ -155,7 +156,7 @@ def wandb_summary_values(
             summary[prefix] = value
             return
         if isinstance(value, (list, tuple)):
-            if prefix in WANDB_EXCLUDED_SEQUENCE_PATHS or not value:
+            if prefix in WANDB_EXCLUDED_SEQUENCE_PATHS:
                 return
             if all(
                 item is None or isinstance(item, (bool, int, float, str))
@@ -782,6 +783,12 @@ def _init_wandb(
                 else None
             ),
             "warmup_runs": config.warmup_runs,
+            "progress_every": config.progress_every,
+            "face_model_path": str(config.face_model_path.expanduser().resolve()),
+            "age_model_path": str(config.age_model_path.expanduser().resolve()),
+            "gender_model_path": str(
+                config.gender_model_path.expanduser().resolve()
+            ),
         },
         save_code=True,
     )
@@ -845,10 +852,17 @@ def _log_wandb_result(
         local_path=str(output_path.expanduser().resolve()),
         name=output_path.name,
     )
+    for export_path_value in result.get("exports", {}).values():
+        export_path = Path(export_path_value).expanduser().resolve()
+        if export_path.is_file():
+            artifact.add_file(
+                local_path=str(export_path),
+                name=export_path.name,
+            )
     run.log_artifact(artifact)
     print(
         f"[benchmark] logged {len(metrics)} metrics and "
-        f"{len(summary_values)} populated summary fields to W&B run {run.name}"
+        f"{len(summary_values)} summary columns to W&B run {run.name}"
     )
 
 
