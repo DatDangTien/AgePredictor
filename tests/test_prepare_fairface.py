@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import cv2
@@ -16,6 +18,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 from prepare_fairface import (  # noqa: E402
+    image_padding_from_version,
     parse_age_group,
     parse_gender,
     parse_race,
@@ -25,6 +28,10 @@ from manifest import load_manifest  # noqa: E402
 
 
 class PrepareFairFaceTests(unittest.TestCase):
+    def test_infers_padding_from_dataset_version(self) -> None:
+        self.assertEqual(image_padding_from_version("margin025"), 0.25)
+        self.assertEqual(image_padding_from_version("margin125"), 1.25)
+
     def test_normalizes_official_labels(self) -> None:
         self.assertEqual(parse_age_group("20-29"), ("20-29", 20, 29, 25))
         self.assertEqual(parse_age_group("more than 70"), ("70+", 70, None, 75))
@@ -71,21 +78,28 @@ class PrepareFairFaceTests(unittest.TestCase):
 
             output = root / "manifest.csv"
             report = root / "validation.json"
-            validation = prepare_manifest(
-                data_dir=data_root,
-                train_labels_path=train_labels,
-                val_labels_path=val_labels,
-                dataset_id="DS003",
-                dataset_version="margin025",
-                output_path=output,
-                validation_report_path=report,
-            )
+            progress_output = io.StringIO()
+            with redirect_stdout(progress_output):
+                validation = prepare_manifest(
+                    data_dir=data_root,
+                    train_labels_path=train_labels,
+                    val_labels_path=val_labels,
+                    dataset_id="DS003",
+                    dataset_version="margin025",
+                    output_path=output,
+                    validation_report_path=report,
+                    progress_every=1,
+                )
 
             with output.open(newline="", encoding="utf-8") as manifest_file:
                 rows = list(csv.DictReader(manifest_file))
             records = load_manifest(output)
 
         self.assertEqual(validation["valid_records"], 2)
+        self.assertIn("starting train labels", progress_output.getvalue())
+        self.assertIn("train: processed 1 label rows", progress_output.getvalue())
+        self.assertIn("finished validation", progress_output.getvalue())
+        self.assertIn("scanning image folders", progress_output.getvalue())
         self.assertEqual(
             validation["valid_records_by_split"],
             {"train": 1, "validation": 1},
@@ -95,6 +109,7 @@ class PrepareFairFaceTests(unittest.TestCase):
         self.assertEqual([row["age"] for row in rows], ["25", "75"])
         self.assertEqual([row["gender"] for row in rows], ["Male", "Female"])
         self.assertEqual(json.loads(rows[1]["metadata_json"])["age_group"], "70+")
+        self.assertEqual(json.loads(rows[1]["metadata_json"])["image_padding"], 0.25)
         self.assertEqual([record.dataset_split for record in records], ["train", "validation"])
 
     def test_can_leave_interval_age_blank(self) -> None:

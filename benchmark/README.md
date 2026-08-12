@@ -113,6 +113,8 @@ Main benchmark components:
 | `scripts/prepare_all_age_faces.py` | Builds the DS001 All-Age-Faces manifest from local images. |
 | `scripts/prepare_utkface.py` | Builds the DS002 UTKFace manifest, including `.jpg.chip.jpg` images. |
 | `scripts/prepare_fairface.py` | Builds one DS003 FairFace manifest from the official train and validation label CSVs and image folders. |
+| `scripts/run_fairface_margin025_benchmark.sh` | Prepares and benchmarks the complete FairFace margin 0.25 dataset on CUDA with W&B logging. |
+| `scripts/run_fairface_margin125_benchmark.sh` | Prepares and benchmarks the complete FairFace margin 1.25 dataset on CUDA with W&B logging. |
 | `scripts/prepare_<future_dataset>.py` | Placeholder pattern for future dataset-specific manifest builders. |
 | `manifests/` | Stores canonical dataset manifests and reusable sample lists. |
 | `output/` | Stores benchmark JSON results, validation reports, TSV summaries, CSV sample rows, and failure reports. |
@@ -217,6 +219,18 @@ distance to the nearest valid interval boundary. The default also stores a
 representative proxy age for compatibility with the exact-age metrics. Use
 `--age-label-policy blank` to disable those proxy-age metrics; interval-aware
 accuracy and age inference latency still run.
+
+The complete margin-specific pipelines can be run directly. Both use DS003 and
+distinguish the image variants through `dataset_version`, manifest names, run
+names, and W&B tags:
+
+```bash
+./scripts/run_fairface_margin025_benchmark.sh
+./scripts/run_fairface_margin125_benchmark.sh
+```
+
+Manifest preparation prints a start message, periodic progress every 1,000
+label rows, a summary for each split, and a final validation scan message.
 
 ### 3. Create A Reusable Sample List
 
@@ -537,8 +551,11 @@ preserved in `samples`.
 
 ## W&B Logging
 
-`wandb_metrics()` recursively flattens numeric values under `dataset`, `face`,
-`age`, `gender`, and `pipeline`. For example:
+W&B receives every populated aggregate scalar from the benchmark result. Numeric
+values are logged as metrics, while numeric, boolean, and text values are also
+written to the run summary so they appear as run-table columns. This includes
+run identity, environment, configuration, provider, model, dataset, face, age,
+gender, and pipeline fields. Empty and `null` values are omitted. For example:
 
 - `age/mae`
 - `age/interval_aware/mae`
@@ -548,6 +565,8 @@ preserved in `samples`.
 - `gender/confusion_matrix/true_female_pred_female`
 - `pipeline/throughput_images_per_second`
 
-All scalar metrics are logged with `run.log(metrics)`. The JSON result is saved
-as a W&B artifact, while artifact metadata is intentionally compact to stay
-below W&B's 100-key metadata limit.
+Large row collections (`samples` and `failures`) and repeated sample-ID lists
+are not expanded into thousands of W&B summary columns. They remain available
+in the complete JSON result artifact and the generated CSV exports. Artifact
+metadata itself is intentionally compact to stay below W&B's 100-key metadata
+limit.

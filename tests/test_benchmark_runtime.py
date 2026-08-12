@@ -16,6 +16,7 @@ from benchmark_runtime import (  # noqa: E402
     _log_wandb_result,
     _record_age_interval,
     wandb_metrics,
+    wandb_summary_values,
 )
 from metrics import (  # noqa: E402
     age_interval_metrics,
@@ -150,6 +151,52 @@ class WandbMetricFlatteningTests(unittest.TestCase):
             3,
         )
 
+    def test_logs_all_populated_aggregate_fields_and_skips_large_rows(self) -> None:
+        result = {
+            "schema_version": "2.0",
+            "run": {
+                "run_id": "RUN001",
+                "sample_count": 2,
+                "selected_sample_ids": ["sample-1", "sample-2"],
+                "git_commit": None,
+            },
+            "environment": {"python": "3.12.0"},
+            "config": {
+                "warmup_runs": 10,
+                "providers_requested": ["CUDA"],
+                "enabled": True,
+                "empty_value": "",
+            },
+            "models": {"face": {"size_bytes": 123, "path": "/models/face.onnx"}},
+            "dataset": {
+                "record_count": 2,
+                "sampling": {"sample_ids": ["sample-1", "sample-2"]},
+            },
+            "pipeline": {"success_rate": 1.0},
+            "samples": [{"sample_id": "sample-1", "pipeline_ms": 1.0}],
+            "failures": [],
+            "exports": {"headline": "/output/headline.tsv"},
+        }
+
+        summary = wandb_summary_values(result)
+        metrics = wandb_metrics(result)
+
+        self.assertEqual(summary["run/run_id"], "RUN001")
+        self.assertEqual(summary["environment/python"], "3.12.0")
+        self.assertEqual(summary["config/providers_requested"], '["CUDA"]')
+        self.assertIs(summary["config/enabled"], True)
+        self.assertNotIn("config/empty_value", summary)
+        self.assertEqual(summary["models/face/path"], "/models/face.onnx")
+        self.assertNotIn("run/git_commit", summary)
+        self.assertNotIn("run/selected_sample_ids", summary)
+        self.assertFalse(any(key.startswith("samples/") for key in summary))
+        self.assertFalse(any(key.startswith("failures/") for key in summary))
+        self.assertFalse(any(key.startswith("exports/") for key in summary))
+        self.assertEqual(metrics["run/sample_count"], 2)
+        self.assertEqual(metrics["config/warmup_runs"], 10)
+        self.assertEqual(metrics["models/face/size_bytes"], 123)
+        self.assertEqual(metrics["pipeline/success_rate"], 1.0)
+
     def test_artifact_metadata_stays_compact(self) -> None:
         calls: dict[str, object] = {}
 
@@ -163,6 +210,7 @@ class WandbMetricFlatteningTests(unittest.TestCase):
         class FakeRun:
             id = "run-123"
             name = "benchmark-test"
+            summary: dict[str, object] = {}
 
             def log(self, metrics: dict[str, int | float]) -> None:
                 calls["metrics"] = metrics
@@ -195,6 +243,8 @@ class WandbMetricFlatteningTests(unittest.TestCase):
         self.assertLessEqual(len(metadata), 100)
         self.assertEqual(metadata["gender_accuracy"], 0.75)
         self.assertGreater(len(calls["metrics"]), 100)
+        self.assertEqual(FakeRun.summary["run/run_id"], "RUN001")
+        self.assertEqual(FakeRun.summary["schema_version"], "2.0")
 
 
 if __name__ == "__main__":

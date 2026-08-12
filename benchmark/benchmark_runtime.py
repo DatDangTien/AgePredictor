@@ -125,20 +125,55 @@ class TimedSession:
         return getattr(self.session, name)
 
 
-def wandb_metrics(result: dict[str, Any]) -> dict[str, int | float]:
-    """Flatten numeric aggregate results into W&B metric names."""
-    metrics: dict[str, int | float] = {}
+WANDB_EXCLUDED_ROOTS = {"exports", "failures", "samples"}
+WANDB_EXCLUDED_SEQUENCE_PATHS = {
+    "dataset/sampling/sample_ids",
+    "run/selected_sample_ids",
+}
+
+
+def wandb_summary_values(
+    result: dict[str, Any],
+) -> dict[str, bool | int | float | str]:
+    """Flatten populated aggregate result fields for the W&B run table."""
+    summary: dict[str, bool | int | float | str] = {}
 
     def collect(value: Any, prefix: str) -> None:
         if isinstance(value, dict):
             for key, nested_value in value.items():
-                collect(nested_value, f"{prefix}/{key}")
-        elif isinstance(value, (int, float)) and not isinstance(value, bool):
-            metrics[prefix] = value
+                if not prefix and key in WANDB_EXCLUDED_ROOTS:
+                    continue
+                nested_prefix = f"{prefix}/{key}" if prefix else key
+                collect(nested_value, nested_prefix)
+            return
+        if value is None or value == "":
+            return
+        if isinstance(value, bool):
+            summary[prefix] = value
+            return
+        if isinstance(value, (int, float, str)):
+            summary[prefix] = value
+            return
+        if isinstance(value, (list, tuple)):
+            if prefix in WANDB_EXCLUDED_SEQUENCE_PATHS or not value:
+                return
+            if all(
+                item is None or isinstance(item, (bool, int, float, str))
+                for item in value
+            ):
+                summary[prefix] = json.dumps(value, ensure_ascii=False)
 
-    for section in ("dataset", "face", "age", "gender", "pipeline"):
-        collect(result.get(section, {}), section)
-    return metrics
+    collect(result, "")
+    return summary
+
+
+def wandb_metrics(result: dict[str, Any]) -> dict[str, int | float]:
+    """Flatten every populated numeric aggregate result into W&B metrics."""
+    return {
+        key: value
+        for key, value in wandb_summary_values(result).items()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -778,8 +813,10 @@ def _log_wandb_result(
 ) -> None:
     import wandb
 
+    summary_values = wandb_summary_values(result)
     metrics = wandb_metrics(result)
     run.log(metrics)
+    run.summary.update(summary_values)
 
     artifact_metadata = {
         "schema_version": result.get("schema_version"),
@@ -795,6 +832,9 @@ def _log_wandb_result(
         "gender_accuracy": result.get("gender", {}).get("accuracy"),
         "gender_macro_f1": result.get("gender", {}).get("macro_f1"),
     }
+    artifact_metadata = {
+        key: value for key, value in artifact_metadata.items() if value is not None
+    }
     artifact = wandb.Artifact(
         name=f"benchmark-runtime-{run.id}",
         type="benchmark-result",
@@ -806,7 +846,10 @@ def _log_wandb_result(
         name=output_path.name,
     )
     run.log_artifact(artifact)
-    print(f"[benchmark] logged {len(metrics)} metrics to W&B run {run.name}")
+    print(
+        f"[benchmark] logged {len(metrics)} metrics and "
+        f"{len(summary_values)} populated summary fields to W&B run {run.name}"
+    )
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

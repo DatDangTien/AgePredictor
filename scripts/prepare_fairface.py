@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -99,6 +100,17 @@ def parse_service_test(value: str | None) -> bool | None:
     raise ValueError(f"service_test must be true, false, or blank: {value!r}")
 
 
+def image_padding_from_version(dataset_version: str) -> float:
+    normalized = dataset_version.strip().lower().replace("_", "")
+    match = re.fullmatch(r"margin(\d+)", normalized)
+    if match is None:
+        raise ValueError(
+            "cannot infer image padding from dataset version; use a value such "
+            "as margin025 or margin125"
+        )
+    return int(match.group(1)) / 100.0
+
+
 def prepare_manifest(
     *,
     data_dir: Path,
@@ -109,12 +121,23 @@ def prepare_manifest(
     output_path: Path,
     validation_report_path: Path,
     age_label_policy: str = "representative",
+    image_padding: float | None = None,
+    progress_every: int = 1000,
 ) -> dict[str, Any]:
     data_root = data_dir.expanduser().resolve()
     if not data_root.is_dir():
         raise FileNotFoundError(f"FairFace data directory not found: {data_root}")
     if age_label_policy not in {"representative", "blank"}:
         raise ValueError("age_label_policy must be representative or blank")
+    if progress_every < 0:
+        raise ValueError("progress_every must be non-negative")
+    resolved_image_padding = (
+        image_padding
+        if image_padding is not None
+        else image_padding_from_version(dataset_version)
+    )
+    if resolved_image_padding < 0:
+        raise ValueError("image_padding must be non-negative")
 
     label_paths = {
         "train": _resolve_label_path(
@@ -144,12 +167,21 @@ def prepare_manifest(
     race_counts: Counter[str] = Counter()
     label_rows_by_split: Counter[str] = Counter()
 
+    print(
+        f"[prepare-fairface] data root: {data_root} | "
+        f"version={dataset_version} | padding={resolved_image_padding}",
+        flush=True,
+    )
     for folder_name, manifest_split in SPLITS:
         split_dir = data_root / folder_name
         if not split_dir.is_dir():
             raise FileNotFoundError(f"FairFace split directory not found: {split_dir}")
 
         labels_path = label_paths[folder_name]
+        print(
+            f"[prepare-fairface] starting {manifest_split} labels: {labels_path}",
+            flush=True,
+        )
         with labels_path.open(newline="", encoding="utf-8-sig") as labels_file:
             reader = csv.DictReader(labels_file)
             missing_columns = REQUIRED_LABEL_COLUMNS - set(reader.fieldnames or ())
@@ -161,6 +193,13 @@ def prepare_manifest(
 
             for row_number, source_row in enumerate(reader, start=2):
                 label_rows_by_split[manifest_split] += 1
+                split_rows = label_rows_by_split[manifest_split]
+                if progress_every > 0 and split_rows % progress_every == 0:
+                    print(
+                        f"[prepare-fairface] {manifest_split}: processed "
+                        f"{split_rows:,} label rows; {len(rows):,} total valid",
+                        flush=True,
+                    )
                 location = f"{labels_path.name}:{row_number}"
                 try:
                     relative_path = _fairface_image_path(
@@ -238,7 +277,7 @@ def prepare_manifest(
                                 "age_label_policy": age_label_policy,
                                 "race_label": race,
                                 "service_test": service_test,
-                                "image_padding": 0.25,
+                                "image_padding": resolved_image_padding,
                             },
                             separators=(",", ":"),
                         ),
@@ -248,6 +287,12 @@ def prepare_manifest(
                 age_group_counts[age_group] += 1
                 gender_counts[gender] += 1
                 race_counts[race] += 1
+        print(
+            f"[prepare-fairface] finished {manifest_split}: "
+            f"{label_rows_by_split[manifest_split]:,} label rows; "
+            f"{split_counts[manifest_split]:,} valid records",
+            flush=True,
+        )
 
     if not rows:
         raise ValueError("No valid FairFace records were found")
@@ -259,6 +304,7 @@ def prepare_manifest(
         writer.writeheader()
         writer.writerows(rows)
 
+    print("[prepare-fairface] scanning image folders for validation", flush=True)
     discovered_images = _discover_images(data_root)
     unlabeled_images = sorted(discovered_images - labelled_image_paths)
     validation = {
@@ -273,6 +319,7 @@ def prepare_manifest(
         "valid_records": len(rows),
         "valid_records_by_split": dict(split_counts),
         "age_label_policy": age_label_policy,
+        "image_padding": resolved_image_padding,
         "age_group_counts": dict(age_group_counts),
         "gender_counts": dict(gender_counts),
         "race_counts": dict(race_counts),
@@ -377,6 +424,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dataset-id", default="DS003")
     parser.add_argument("--dataset-version", default="margin025")
     parser.add_argument(
+        "--image-padding",
+        type=float,
+        help="Image padding multiplier; inferred from --dataset-version by default",
+    )
+    parser.add_argument(
         "--age-label-policy",
         choices=("representative", "blank"),
         default="representative",
@@ -395,6 +447,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=REPO_ROOT / "output" / "validation" / "DS003_validation.json",
     )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=1000,
+        help="Print preparation progress every N label rows; 0 disables periodic logs",
+    )
     return parser.parse_args(argv)
 
 
@@ -409,10 +467,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         output_path=args.output,
         validation_report_path=args.validation_report,
         age_label_policy=args.age_label_policy,
+        image_padding=args.image_padding,
+        progress_every=args.progress_every,
     )
     print(
         f"[prepare-fairface] wrote {args.output} with "
-        f"{validation['valid_records']:,} valid train/validation records"
+        f"{validation['valid_records']:,} valid train/validation records",
+        flush=True,
     )
 
 
