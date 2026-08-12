@@ -12,8 +12,18 @@ BENCHMARK_DIR = REPO_ROOT / "benchmark"
 if str(BENCHMARK_DIR) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_DIR))
 
-from benchmark_runtime import _log_wandb_result, wandb_metrics  # noqa: E402
-from metrics import age_metrics_by_interval, gender_metrics  # noqa: E402
+from benchmark_runtime import (  # noqa: E402
+    _log_wandb_result,
+    _record_age_interval,
+    wandb_metrics,
+)
+from metrics import (  # noqa: E402
+    age_interval_metrics,
+    age_metrics_by_interval,
+    gender_metrics,
+    interval_absolute_error,
+)
+from records import BenchmarkRecord  # noqa: E402
 
 
 class GenderMetricsTests(unittest.TestCase):
@@ -53,6 +63,42 @@ class GenderMetricsTests(unittest.TestCase):
 
 
 class AgeIntervalMetricsTests(unittest.TestCase):
+    def test_reads_fairface_interval_metadata_without_requiring_proxy_age(self) -> None:
+        record = BenchmarkRecord(
+            dataset_id="DS003",
+            dataset_version="margin025",
+            sample_id="val_1",
+            path=Path("val/1.jpg"),
+            age=None,
+            metadata={"age_min": 70, "age_max": None, "age_group": "70+"},
+        )
+
+        self.assertEqual(_record_age_interval(record), (70.0, None))
+
+    def test_interval_absolute_error_uses_nearest_boundary(self) -> None:
+        self.assertEqual(interval_absolute_error(25.0, 20.0, 29.0), 0.0)
+        self.assertEqual(interval_absolute_error(18.0, 20.0, 29.0), 2.0)
+        self.assertEqual(interval_absolute_error(32.0, 20.0, 29.0), 3.0)
+
+    def test_open_ended_interval_accepts_every_prediction_above_lower_bound(self) -> None:
+        self.assertEqual(interval_absolute_error(60.0, 70.0, None), 10.0)
+        self.assertEqual(interval_absolute_error(70.0, 70.0, None), 0.0)
+        self.assertEqual(interval_absolute_error(100.0, 70.0, None), 0.0)
+
+    def test_aggregates_interval_aware_age_metrics(self) -> None:
+        metrics = age_interval_metrics(
+            predictions=[18.0, 25.0, 32.0, 60.0, 90.0],
+            lower_bounds=[20.0, 20.0, 20.0, 70.0, 70.0],
+            upper_bounds=[29.0, 29.0, 29.0, None, None],
+        )
+
+        self.assertEqual(metrics["evaluated_images"], 5)
+        self.assertAlmostEqual(metrics["mae"], 3.0)
+        self.assertAlmostEqual(metrics["rmse"], (113 / 5) ** 0.5)
+        self.assertAlmostEqual(metrics["within_interval"], 0.4)
+        self.assertAlmostEqual(metrics["within_5_years"], 0.8)
+        self.assertAlmostEqual(metrics["within_10_years"], 1.0)
+
     def test_computes_age_metrics_by_true_age_interval(self) -> None:
         metrics = age_metrics_by_interval(
             predictions=[10.0, 20.0, 30.0, 50.0],
@@ -83,6 +129,11 @@ class WandbMetricFlatteningTests(unittest.TestCase):
                     },
                 },
                 "age": {
+                    "interval_aware": {
+                        "evaluated_images": 2,
+                        "mae": 1.5,
+                        "within_interval": 0.5,
+                    },
                     "by_true_age_interval": {
                         "0-12": {"samples": 2, "mae": 8.5}
                     }
@@ -93,6 +144,7 @@ class WandbMetricFlatteningTests(unittest.TestCase):
         self.assertEqual(metrics["gender/accuracy"], 0.75)
         self.assertEqual(metrics["gender/macro_f1"], 0.7)
         self.assertEqual(metrics["age/by_true_age_interval/0-12/mae"], 8.5)
+        self.assertEqual(metrics["age/interval_aware/mae"], 1.5)
         self.assertEqual(
             metrics["gender/confusion_matrix/true_female_pred_female"],
             3,

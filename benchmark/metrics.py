@@ -82,6 +82,55 @@ def age_metrics(
     }
 
 
+def interval_absolute_error(
+    prediction: float,
+    lower_bound: float,
+    upper_bound: float | None,
+) -> float:
+    """Return distance to the nearest valid point in an age interval."""
+    if upper_bound is not None and upper_bound < lower_bound:
+        raise ValueError("upper_bound must be greater than or equal to lower_bound")
+    if prediction < lower_bound:
+        return float(lower_bound - prediction)
+    if upper_bound is not None and prediction > upper_bound:
+        return float(prediction - upper_bound)
+    return 0.0
+
+
+def age_interval_metrics(
+    predictions: Sequence[float],
+    lower_bounds: Sequence[float],
+    upper_bounds: Sequence[float | None],
+) -> dict[str, Any]:
+    """Score predictions against bounded or open-ended ground-truth intervals."""
+    if not (len(predictions) == len(lower_bounds) == len(upper_bounds)):
+        raise ValueError("predictions and age interval bounds must have equal lengths")
+    if not predictions:
+        return _empty_interval_age_metrics()
+
+    errors = np.asarray(
+        [
+            interval_absolute_error(prediction, lower_bound, upper_bound)
+            for prediction, lower_bound, upper_bound in zip(
+                predictions,
+                lower_bounds,
+                upper_bounds,
+            )
+        ],
+        dtype=np.float64,
+    )
+    return {
+        "evaluated_images": int(errors.size),
+        "mae": float(errors.mean()),
+        "rmse": float(np.sqrt(np.mean(np.square(errors)))),
+        "median_absolute_error": float(np.median(errors)),
+        "p90_absolute_error": float(np.percentile(errors, 90)),
+        "within_interval": float(np.mean(errors == 0.0)),
+        "within_5_years": float(np.mean(errors <= 5.0)),
+        "within_10_years": float(np.mean(errors <= 10.0)),
+    }
+
+
 def age_metrics_by_interval(
     predictions: Sequence[float],
     labels: Sequence[int],
@@ -100,6 +149,19 @@ def age_metrics_by_interval(
             **_age_error_metrics(predicted[mask], expected[mask]),
         }
     return result
+
+
+def _empty_interval_age_metrics() -> dict[str, Any]:
+    return {
+        "evaluated_images": 0,
+        "mae": None,
+        "rmse": None,
+        "median_absolute_error": None,
+        "p90_absolute_error": None,
+        "within_interval": None,
+        "within_5_years": None,
+        "within_10_years": None,
+    }
 
 
 def _empty_age_metrics(*, evaluated_images: int | None = None) -> dict[str, Any]:

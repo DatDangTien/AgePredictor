@@ -32,9 +32,11 @@ from app.inference import AgePipeline  # noqa: E402
 from exporters import export_all  # noqa: E402
 from manifest import load_manifest  # noqa: E402
 from metrics import (  # noqa: E402
+    age_interval_metrics,
     age_metrics,
     age_metrics_by_interval,
     gender_metrics,
+    interval_absolute_error,
     latency_summary,
     value_summary,
 )
@@ -91,6 +93,9 @@ class BenchmarkMeasurements:
     pipeline_ms: list[float] = field(default_factory=list)
     age_predictions: list[float] = field(default_factory=list)
     age_labels: list[int] = field(default_factory=list)
+    age_interval_predictions: list[float] = field(default_factory=list)
+    age_interval_lower_bounds: list[float] = field(default_factory=list)
+    age_interval_upper_bounds: list[float | None] = field(default_factory=list)
     gender_predictions: list[str] = field(default_factory=list)
     gender_labels: list[str] = field(default_factory=list)
     gender_confidences: list[float] = field(default_factory=list)
@@ -212,6 +217,31 @@ def _elapsed_ms(started: float) -> float:
     return (time.perf_counter() - started) * 1000.0
 
 
+def _record_age_interval(
+    record: BenchmarkRecord,
+) -> tuple[float, float | None] | None:
+    metadata = record.metadata
+    if "age_min" not in metadata or "age_max" not in metadata:
+        return None
+
+    lower_bound = metadata["age_min"]
+    upper_bound = metadata["age_max"]
+    if isinstance(lower_bound, bool) or not isinstance(lower_bound, (int, float)):
+        raise ValueError("metadata age_min must be numeric")
+    if upper_bound is not None and (
+        isinstance(upper_bound, bool) or not isinstance(upper_bound, (int, float))
+    ):
+        raise ValueError("metadata age_max must be numeric or null")
+
+    lower = float(lower_bound)
+    upper = float(upper_bound) if upper_bound is not None else None
+    if lower < 0:
+        raise ValueError("metadata age_min must be non-negative")
+    if upper is not None and upper < lower:
+        raise ValueError("metadata age_max must be greater than or equal to age_min")
+    return lower, upper
+
+
 def _benchmark_record(
     pipeline: AgePipeline,
     face_timer: TimedSession,
@@ -275,6 +305,24 @@ def _benchmark_record(
             sample["age_absolute_error"] = abs(predicted_age - record.age)
             sample["age_signed_error"] = predicted_age - record.age
 
+        age_interval = _record_age_interval(record)
+        if age_interval is not None:
+            lower_bound, upper_bound = age_interval
+            interval_error = interval_absolute_error(
+                predicted_age,
+                lower_bound,
+                upper_bound,
+            )
+            measurements.age_interval_predictions.append(predicted_age)
+            measurements.age_interval_lower_bounds.append(lower_bound)
+            measurements.age_interval_upper_bounds.append(upper_bound)
+            sample.update(
+                age_interval_min=lower_bound,
+                age_interval_max=upper_bound,
+                age_interval_absolute_error=interval_error,
+                age_within_label_interval=interval_error == 0.0,
+            )
+
         failure_stage = "gender_inference"
         gender_input = pipeline._gender_input(age_input)
         model_started = time.perf_counter()
@@ -326,10 +374,15 @@ def _dataset_summary(records: Sequence[BenchmarkRecord]) -> dict[str, Any]:
     age_values = [record.age for record in records if record.age is not None]
     dataset_ids = sorted({record.dataset_id for record in records})
     splits = Counter(record.dataset_split or "unspecified" for record in records)
+    interval_label_count = sum(
+        _record_age_interval(record) is not None for record in records
+    )
     return {
         "record_count": len(records),
         "dataset_ids": dataset_ids,
         "age_ground_truth_available": bool(age_values),
+        "age_interval_ground_truth_available": interval_label_count > 0,
+        "age_interval_ground_truth_count": interval_label_count,
         "gender_ground_truth_available": bool(gender_counts),
         "bounding_boxes_available": any(record.bbox_xyxy is not None for record in records),
         "age_min": min(age_values) if age_values else None,
@@ -420,7 +473,7 @@ def _build_result(
             "stage_latency": latency_summary(measurements.face_stage_ms),
         },
         "age": {
-            "measurement": "accuracy against available age labels",
+            "measurement": "accuracy against available exact or proxy age labels",
             "inference_images": measurements.age_inference_count,
             **age_metrics(
                 measurements.age_predictions,
@@ -430,6 +483,16 @@ def _build_result(
                 measurements.age_predictions,
                 measurements.age_labels,
             ),
+            "interval_aware": {
+                "measurement": (
+                    "distance to the nearest valid ground-truth age interval boundary"
+                ),
+                **age_interval_metrics(
+                    measurements.age_interval_predictions,
+                    measurements.age_interval_lower_bounds,
+                    measurements.age_interval_upper_bounds,
+                ),
+            },
             "model_latency": latency_summary(measurements.age_model_ms),
         },
         "gender": {
@@ -580,6 +643,14 @@ def print_summary(result: dict[str, Any]) -> None:
         f"within 5/10 years: {percent(age['within_5_years'])} / "
         f"{percent(age['within_10_years'])}"
     )
+    interval_aware = age.get("interval_aware", {})
+    if interval_aware.get("evaluated_images", 0):
+        print(
+            "  interval-aware evaluated: "
+            f"{interval_aware['evaluated_images']} | "
+            f"MAE {number(interval_aware['mae'], 3)} | "
+            f"within label interval {percent(interval_aware['within_interval'])}"
+        )
 
     print("\nGender")
     print(
@@ -718,6 +789,9 @@ def _log_wandb_result(
         "processed_images": result.get("pipeline", {}).get("processed_images"),
         "successful_images": result.get("pipeline", {}).get("successful_images"),
         "age_mae": result.get("age", {}).get("mae"),
+        "age_interval_mae": (
+            result.get("age", {}).get("interval_aware", {}).get("mae")
+        ),
         "gender_accuracy": result.get("gender", {}).get("accuracy"),
         "gender_macro_f1": result.get("gender", {}).get("macro_f1"),
     }

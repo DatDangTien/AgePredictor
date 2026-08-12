@@ -211,10 +211,12 @@ python scripts/prepare_fairface.py \
   --val-labels data/FairFace/fairface_label_val.csv
 ```
 
-FairFace provides age intervals rather than exact ages. The default stores a
-representative proxy age so the existing age metrics can run and records the
-source interval in `metadata_json`. Use `--age-label-policy blank` to avoid
-exact-age accuracy metrics while retaining age inference latency.
+FairFace provides age intervals rather than exact ages. The source interval is
+stored in `metadata_json`, and the runtime reports interval-aware error as the
+distance to the nearest valid interval boundary. The default also stores a
+representative proxy age for compatibility with the exact-age metrics. Use
+`--age-label-policy blank` to disable those proxy-age metrics; interval-aware
+accuracy and age inference latency still run.
 
 ### 3. Create A Reusable Sample List
 
@@ -446,6 +448,10 @@ Age predictions are compared against the true age encoded in each filename.
 - `within_5_years`: fraction of predictions with absolute error at most 5 years.
 - `within_10_years`: fraction of predictions with absolute error at most 10
   years.
+- `interval_aware`: metrics computed against interval-labelled ages. Error is
+  zero inside the interval, distance to the lower bound below it, and distance
+  to the upper bound above it. Open-ended intervals such as FairFace `70+` have
+  zero error for every prediction at or above 70.
 - `model_latency`: ONNX Runtime session latency for the age model.
 
 `by_true_age_interval` repeats the main age-error metrics inside each true-age
@@ -535,6 +541,8 @@ preserved in `samples`.
 `age`, `gender`, and `pipeline`. For example:
 
 - `age/mae`
+- `age/interval_aware/mae`
+- `age/interval_aware/within_interval`
 - `age/by_true_age_interval/0-12/mae`
 - `gender/accuracy`
 - `gender/confusion_matrix/true_female_pred_female`

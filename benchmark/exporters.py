@@ -20,6 +20,9 @@ HEADLINE_COLUMNS = (
     "AGE_P90_AE",
     "AGE_Within5",
     "AGE_Within10",
+    "AGE_Interval_Evaluated",
+    "AGE_Interval_MAE",
+    "AGE_Within_Label_Interval",
     "GEN_Accuracy",
     "GEN_Balanced_Accuracy",
     "GEN_Macro_F1",
@@ -40,6 +43,7 @@ def export_headline_tsv(result: dict[str, Any], path: Path) -> Path:
     age = result["age"]
     gender = result["gender"]
     pipeline = result["pipeline"]
+    interval_aware = age.get("interval_aware", {})
     row = {
         "Run_ID": run_id,
         "Face_Coverage": face.get("detection_coverage"),
@@ -55,6 +59,9 @@ def export_headline_tsv(result: dict[str, Any], path: Path) -> Path:
         "AGE_P90_AE": age.get("p90_absolute_error"),
         "AGE_Within5": age.get("within_5_years"),
         "AGE_Within10": age.get("within_10_years"),
+        "AGE_Interval_Evaluated": interval_aware.get("evaluated_images"),
+        "AGE_Interval_MAE": interval_aware.get("mae"),
+        "AGE_Within_Label_Interval": interval_aware.get("within_interval"),
         "GEN_Accuracy": gender.get("accuracy"),
         "GEN_Balanced_Accuracy": gender.get("balanced_accuracy"),
         "GEN_Macro_F1": gender.get("macro_f1"),
